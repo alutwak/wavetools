@@ -31,7 +31,7 @@
         (a2 (spect-params-a2 sparams))
         (r1 (spect-params-r1 sparams))
         (r2 (spect-params-r2 sparams)))
-    (* c (spectral-direction theta a1 a2 r1 r2))))
+    (* c (spreading-function theta a1 a2 r1 r2))))
 
 (defun get-spectrum (spoint dir-res)
   (let* (
