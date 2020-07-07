@@ -1,21 +1,86 @@
 
 (declaim (optimize (debug 3)))
 
-(ql:quickload '(:dexador :plump :lquery :lparallel :str :cl-ppcre) :silent t)
+(ql:quickload '(:dexador :plump :lquery :lparallel :uiop :str :cl-ppcre) :silent t)
 
 (load (compile-file "wavespectrum.lisp"))
 
-(defvar *station-cache* "~/.buoy/")
-(defvar *hist-path* (concatenate 'string *station-cache* "~D/hist/"))
+;;; Path definitions and retrieval functions
 
-(defun parse-rtd (raw-spec raw-a1 raw-a2 raw-r1 raw-r2)
+(defvar *buoy-cache* (uiop:native-namestring "~/.buoy/")
+  "Main path for the bouy data cache")
+
+(defun ensure-cache-exists ()
+  "Ensures that the cache directory exists."
+  (ensure-directories-exist *buoy-cache*))
+
+(defvar *station-cache* (concatenate 'string *buoy-cache* "~D/")
+  "Path for caching data for a specific station. The ~D is the station ID.")
+
+(defun get-station-cache-path (station-id)
+  (format nil *station-cache* station-id))
+
+(defun ensure-station-cache-exists (station-id)
+  "Ensures that the cache directory exists for the station and returns the path."
+  (let ((cache-path (get-station-cache-path station-id)))
+    (ensure-directories-exist cache-path)
+    cache-path))
+
+(defvar *rtd-path* "rtd/"
+  "Path for real-time data cache. This will contain data for the last 45 days. Some of that may overlap with historical data.
+In general, the historical data will be better than the real-time data. This data gets updated at least daily, so this cache
+is only really useful when multiple hits on the data are done within a few hours.")
+
+(defun get-rtd-data-path (station-id)
+  (concatenate 'string (get-station-cache-path station-id) *rtd-path*))
+
+(defun ensure-rtd-data-path-exists (station-id)
+  (let ((cache-path (get-rtd-data-path station-id)))
+    (ensure-directories-exist cache-path)
+    cache-path))
+
+(defvar *hist-path* "hist/"
+  "Path for historical data cache.")
+
+(defun get-hist-data-path (station-id &optional month-or-year)
+  (str:concat (get-station-cache-path station-id) *hist-path* month-or-year))
+
+(defun ensure-hist-path-exists (station-id &optional month-or-year)
+  (let ((cache-path (get-hist-data-path station-id month-or-year)))
+    (ensure-directories-exist cache-path)
+    cache-path))
+
+;; ----------------------------------- Raw Data (in string format) -------------------------------
+
+(defstruct (raw-data (:constructor make-raw-data (c a1 a2 r1 r2)))
+  (c nil :read-only t)
+  (a1 nil :read-only t)
+  (a2 nil :read-only t)
+  (r1 nil :read-only t)
+  (r2 nil :read-only t))
+
+(defvar *date-scan* (ppcre:create-scanner "(\\d{4}) (\\d{2}) (\\d{2}) (\\d{2}) (\\d{2})")
+  "Regex for retrieving the date from a buoy data row")
+
+
+
+(defun parse-date (row-str)
+  (ppcre:register-groups-bind
+   ((#'parse-integer year month day hour min))
+   (*date-scan*
+    row-str)
+   (encode-universal-time 0 min hour day month year)))
+
+
+;;; Real Time Data
+
+(defun parse-rtd (raw)
   "Parses real-time data formatted strings into a list of spectral-points. 
 
 Each parameter comes in a separate file (which are provided to parse-rtd as strings). Each line of each file starts with
 a 5-number date, and the values of the parameter for each frequency are given as: <val1> (<freq1>) <val2> (<freq2>) ...
 The separation frequency is given in the spec file (which defines the 'c' parameter)."
-  (let ((date-scan (ppcre:create-scanner "(\\d{4}) (\\d{2}) (\\d{2}) (\\d{2}) (\\d{2})"))  ; regex for extracting the date
-        (fsep-scan (ppcre:create-scanner "([0-9.]+)"))                                     ; regex for getting the fsep
+  (let ((fsep-scan (ppcre:create-scanner "([0-9.]+)"))                                     ; regex for getting the fsep
         (stat-freq-scan (ppcre:create-scanner "([0-9.]+) \\(([0-9.]+)\\)")))           ; regex for getting the stat and freq
     (labels ((split-by-lines (raw-str)
                "Splits into its individual lines"
@@ -24,12 +89,7 @@ The separation frequency is given in the spec file (which defines the 'c' parame
                "Parses a single row from one of the parameter files.
 
                 If date? or sep-freq? are non-nil, they will be captured from the row"
-               (let ((date
-                      (if date? (ppcre:register-groups-bind ((#'parse-integer year month day hour min))
-                                    (date-scan
-                                     row)
-                                  (encode-universal-time 0 min hour day month year))
-                          nil))
+               (let ((date (if date? (parse-date row) nil))
                      (fsep (if sep-freq?
                                (ppcre:register-groups-bind ((#'read-from-string fsep))
                                    (fsep-scan
@@ -68,18 +128,19 @@ The separation frequency is given in the spec file (which defines the 'c' parame
                               (nth 3 c-f-d-fsep))))                ; fsep
                  (if (every #'cdr (list l-spec l-a1 l-a2 l-r1 l-r2))
                      (cons point (parse-all-rows (cdr l-spec) (cdr l-a1) (cdr l-a2) (cdr l-r1) (cdr l-r2)))
-                     point))))
+                     `(,point)))))
 
       ;; Split each stat string by line
       ;; Parse all rows, skipping the header line
-      (parse-all-rows
-       (cdr (split-by-lines raw-spec))
-       (cdr (split-by-lines raw-a1))
-       (cdr (split-by-lines raw-a2))
-       (cdr (split-by-lines raw-r1))
-       (cdr (split-by-lines raw-r2))))))
+      (reverse (parse-all-rows
+                (cdr (split-by-lines (raw-data-c raw)))
+                (cdr (split-by-lines (raw-data-a1 raw)))
+                (cdr (split-by-lines (raw-data-a2 raw)))
+                (cdr (split-by-lines (raw-data-r1 raw)))
+                (cdr (split-by-lines (raw-data-r2 raw))))))))
 
 (defun download-station-rtd (station-id)
+  "Downloads the real-time data for the specified station ID"
   (flet ((get-data (path)
            (dex:get (format nil "https://www.ndbc.noaa.gov/data/realtime2/~D.~A" station-id path))))
     (let ((c-data (get-data "data_spec"))
@@ -87,4 +148,21 @@ The separation frequency is given in the spec file (which defines the 'c' parame
           (a2-data (get-data "swdir2"))
           (r1-data (get-data "swr1"))
           (r2-data (get-data "swr2")))
-      `(,c-data ,a1-data ,a2-data ,r1-data ,r2-data))))
+      (make-raw-data c-data a1-data a2-data r1-data r2-data))))
+
+(defun cache-station-rtd (station-id raw-data)
+  "Saves data to the real-time data cache for the station with station-id."
+  (let ((rtd-data-path (ensure-rtd-data-path-exists station-id)))
+    (mapcar (lambda (getter name)
+              (str:to-file (str:concat rtd-data-path name) (funcall getter raw-data)))
+            (list #'raw-data-c #'raw-data-a1 #'raw-data-a2 #'raw-data-r1 #'raw-data-r2)
+            '("c" "a1" "a2" "r1" "r2"))))
+
+(defun read-rtd-cache (station-id)
+  (let* ((cache-path (get-rtd-data-path station-id)) 
+         (c-data (str:from-file (str:concat cache-path "c")))
+         (a1-data (str:from-file (str:concat cache-path "a1")))
+         (a2-data (str:from-file (str:concat cache-path "a2")))
+         (r1-data (str:from-file (str:concat cache-path "r1")))
+         (r2-data (str:from-file (str:concat cache-path "r2"))))
+    (make-raw-data c-data a1-data a2-data r1-data r2-data)))
