@@ -3,7 +3,9 @@
 
 (ql:quickload '(:dexador :plump :lquery :lparallel :uiop :str :cl-ppcre) :silent t)
 
-(load (compile-file "wavespectrum.lisp"))
+;;(load (compile-file "wavespectrum.lisp"))
+
+;;; Utilities
 
 ;;; Path definitions and retrieval functions
 
@@ -50,6 +52,33 @@ is only really useful when multiple hits on the data are done within a few hours
     (ensure-directories-exist cache-path)
     cache-path))
 
+;; ---------------------------------- Station metadata ------------------------------------
+
+(defstruct (station-metadata (:constructor make-station-metadata (lat lon water-depth)))
+  (lat 0.0 :type float :read-only t)
+  (lon 0.0 :type float :read-only t)
+  (water-depth 0.0 :type float :read-only t))
+
+(defun download-station-metadata (station-id)
+  (let* ((loc-scan (ppcre:create-scanner "\\s+([0-9.]+) (N|S) ([0-9.]+) (E|W)"))
+         (depth-scan (ppcre:create-scanner "\\s+Water depth: ([0-9.]+) m"))
+         (request (dex:get (format nil "https://www.ndbc.noaa.gov/station_page.php?station=~D&uom=E&tz=STN" station-id)))
+         (parsed-req (lquery:$ (lquery:initialize request)))
+         (metadata-str (aref (lquery:$ parsed-req "#stn_metadata p" (text)) 0)) ; This comes as an annoying paragraph
+         (lat)
+         (lon)
+         (water-depth))
+    (dolist (line (str:lines metadata-str) (make-station-metadata lat lon water-depth))
+      (let* ((lat-lon? (ppcre:register-groups-bind ((#'read-from-string lat ltdir lon lndir)) 
+                           (loc-scan line)
+                         (cons (* lat (if (string= ltdir "S") -1 1)) (* lon (if (string= lndir "E") -1 1)))))
+             (w-d? (ppcre:register-groups-bind ((#'read-from-string depth))
+                       (depth-scan line)
+                     (float depth))))
+        (when lat-lon?
+          (setq lat (car lat-lon?) lon (cdr lat-lon?)))
+        (when w-d? (setq water-depth w-d?))))))
+
 ;; ----------------------------------- Raw Data (in string format) -------------------------------
 
 (defstruct (raw-data (:constructor make-raw-data (c a1 a2 r1 r2)))
@@ -82,10 +111,7 @@ a 5-number date, and the values of the parameter for each frequency are given as
 The separation frequency is given in the spec file (which defines the 'c' parameter)."
   (let ((fsep-scan (ppcre:create-scanner "([0-9.]+)"))                                     ; regex for getting the fsep
         (stat-freq-scan (ppcre:create-scanner "([0-9.]+) \\(([0-9.]+)\\)")))           ; regex for getting the stat and freq
-    (labels ((split-by-lines (raw-str)
-               "Splits into its individual lines"
-               (str:split-omit-nulls #\Newline raw-str))
-             (parse-row (row date? sep-freq?)
+    (labels ((parse-row (row date? sep-freq?)
                "Parses a single row from one of the parameter files.
 
                 If date? or sep-freq? are non-nil, they will be captured from the row"
@@ -133,11 +159,11 @@ The separation frequency is given in the spec file (which defines the 'c' parame
       ;; Split each stat string by line
       ;; Parse all rows, skipping the header line
       (reverse (parse-all-rows
-                (cdr (split-by-lines (raw-data-c raw)))
-                (cdr (split-by-lines (raw-data-a1 raw)))
-                (cdr (split-by-lines (raw-data-a2 raw)))
-                (cdr (split-by-lines (raw-data-r1 raw)))
-                (cdr (split-by-lines (raw-data-r2 raw))))))))
+                (cdr (str:lines (raw-data-c raw)))
+                (cdr (str:lines (raw-data-a1 raw)))
+                (cdr (str:lines (raw-data-a2 raw)))
+                (cdr (str:lines (raw-data-r1 raw)))
+                (cdr (str:lines (raw-data-r2 raw))))))))
 
 (defun download-station-rtd (station-id)
   "Downloads the real-time data for the specified station ID"
@@ -166,3 +192,45 @@ The separation frequency is given in the spec file (which defines the 'c' parame
          (r1-data (str:from-file (str:concat cache-path "r1")))
          (r2-data (str:from-file (str:concat cache-path "r2"))))
     (make-raw-data c-data a1-data a2-data r1-data r2-data)))
+
+(defun get-rtd-cache-date (station-id)
+  (handler-case
+      (with-open-file (f (str:concat (get-rtd-data-path station-id) "c"))
+        (read-line f)
+        (let ((line1 (read-line f)))
+          (parse-date line1)))
+    (file-does-not-exist () nil)))
+
+;;; Historical Data
+
+(defun this-year ()
+  (nth-value 5 (get-decoded-time)))
+
+(defun download-station-hist (station-id year-or-month)
+  (labels ((get-year-data (char-key path)
+             (dex:get
+              (format
+               nil
+               "https://www.ndbc.noaa.gov/view_text_file.php?filename=~D~C~D.txt.gz&dir=data/historical/~A/"
+               station-id
+               char-key
+               year-or-month
+               path)))
+           (get-month-data (path)
+             (dex:get
+              (format
+               nil
+               "https://www.ndbc.noaa.gov/data/~A/~A/~D.txt"
+               path
+               year-or-month
+               station-id)))
+           (get-data (char-key path)
+             (if (numberp year-or-month)
+                 (get-year-data char-key path)
+                 (get-month-data path))))
+    (let ((c-data (get-data #\w "swden"))
+          (a1-data (get-data #\d "swdir"))
+          (a2-data (get-data #\i "swdir2"))
+          (r1-data (get-data #\j "swr1"))
+          (r2-data (get-data #\k "swr2")))
+      (make-raw-data c-data a1-data a2-data r1-data r2-data))))
