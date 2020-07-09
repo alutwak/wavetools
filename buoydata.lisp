@@ -47,8 +47,18 @@ is only really useful when multiple hits on the data are done within a few hours
 (defun this-year ()
   (nth-value 5 (get-decoded-time)))
 
+(defun get-hist-data-path-date (time)
+  (multiple-value-bind (s m h d MM YY)
+      (decode-universal-time time)
+    (if (= YY (this-year))
+        (local-time:format-timestring nil (local-time:universal-to-timestamp time) :format '(:short-month))
+        YY)))
+
 (defun get-hist-data-path (station-id &optional month-or-year)
   (str:concat (get-station-cache-path station-id) *hist-path* month-or-year))
+
+(defun get-hist-data-path-from-time (station-id time)
+  (get-hist-data-path station-id (get-hist-data-path-date time)))
 
 (defun ensure-hist-path-exists (station-id &optional month-or-year)
   (let ((cache-path (get-hist-data-path station-id month-or-year)))
@@ -91,8 +101,36 @@ is only really useful when multiple hits on the data are done within a few hours
   (r1 nil :type stream :read-only t)
   (r2 nil :type stream :read-only t))
 
+(defun raw-data-from-strings (c-data a1-data a2-data r1-data r2-data)
+  (make-raw-data
+   (make-string-input-stream c-data)
+   (make-string-input-stream a1-data)
+   (make-string-input-stream a2-data)
+   (make-string-input-stream r1-data)
+   (make-string-input-stream r2-data)))
+
+(defun raw-data-from-paths (c-path a1-path a2-path r1-path r2-path)
+  (make-raw-data
+   (open c-path)
+   (open a1-path)
+   (open a2-path)
+   (open r1-path)
+   (open r2-path)))
+
 (defun raw-data->list (rd)
   (list (raw-data-c rd) (raw-data-a1 rd) (raw-data-a2 rd) (raw-data-r1 rd) (raw-data-r2 rd)))
+
+(defun raw-data-close (rd)
+  (mapc #'close (raw-data->list rd)))
+
+(defmacro with-open-rd-files ((rd c-path a1-path a2-path r1-path r2-path) &body body)
+  "Opens the real-time data files from the rtd cache for a station. These files will need to be manually closed."
+  `(handler-case
+       (let ((,rd (raw-data-from-paths ,c-path ,a1-path ,a2-path ,r1-path ,r2-path)))
+         (prog1
+             (progn ,@body)
+           (raw-data-close ,rd)))
+    (file-does-not-exist () nil)))
 
 (defun raw-data-reset (rd)
   (mapc (lambda (getter)
@@ -104,14 +142,14 @@ is only really useful when multiple hits on the data are done within a few hours
   (values-list
    (mapcar
     (lambda (strm)
-      (read-line strm))
+      (read-line strm nil nil))
     (raw-data->list rd))))
 
 (defun eof-p (stream)
   (not (peek-char nil stream nil nil)))
 
 (defun raw-data-eof-p (rd)
-  (every #'eof-p (raw-data->list rd)))
+  (some #'eof-p (raw-data->list rd)))
 
 (defvar *date-scan* (ppcre:create-scanner "(\\d{4}) (\\d{2}) (\\d{2}) (\\d{2}) (\\d{2})")
   "Regex for retrieving the date from a buoy data row")
@@ -189,13 +227,22 @@ The separation frequency is given in the spec file (which defines the 'c' parame
       (raw-data-read-line rd) ;; Discard header
       (reverse (parse-next-entry)))))
 
-(defun cache-station-rtd (station-id raw-c raw-a1 raw-a2 raw-r1 raw-r2)
+(defun get-station-rtd-cache-paths (station-id)
+  (let ((cache-path (get-rtd-data-path station-id)))
+        (values
+         (str:concat cache-path "c")
+         (str:concat cache-path "a1")
+         (str:concat cache-path "a2")
+         (str:concat cache-path "r1")
+         (str:concat cache-path "r2"))))
+
+(defun cache-station-rtd (station-id rd)
   "Saves data to the real-time data cache for the station with station-id."
-  (let ((rtd-data-path (ensure-rtd-data-path-exists station-id)))
-    (mapcar (lambda (data name)
-              (str:to-file (str:concat rtd-data-path name) data))
-            (list raw-c raw-a1 raw-a2 raw-r1 raw-r2)
-            '("c" "a1" "a2" "r1" "r2"))))
+  (ensure-rtd-data-path-exists station-id)
+  (mapc (lambda (data path)
+          (str:to-file path (uiop:slurp-stream-string data)))
+        (multiple-value-list (get-station-rtd-cache-paths station-id))
+        (raw-data->list rd)))
 
 (defun download-station-rtd (station-id &optional cache-data)
   "Downloads the real-time data for the specified station ID"
@@ -211,42 +258,39 @@ The separation frequency is given in the spec file (which defines the 'c' parame
         ;; Do it in a thread so we don't hang this up
         (bt:make-thread
          (lambda ()
-           (cache-station-rtd station-id c-data a1-data a2-data r1-data r2-data))))
+           (cache-station-rtd station-id (raw-data-from-strings c-data a1-data a2-data r1-data r2-data)))))
 
-      (parse-rtd (make-raw-data
-                  (make-string-input-stream c-data)
-                  (make-string-input-stream a1-data)
-                  (make-string-input-stream a2-data)
-                  (make-string-input-stream r1-data)
-                  (make-string-input-stream r2-data))))))
+      (parse-rtd (raw-data-from-strings c-data a1-data a2-data r1-data r2-data)))))
+
+(defun open-station-rtd-cache (station-id)
+  "Opens the real-time data files from the rtd cache for a station. These files will need to be manually closed. It's probably
+better to use with-open-rd-files if you can."
+  (handler-case
+      (multiple-value-bind (c a1 a2 r1 r2)
+          (get-station-rtd-cache-paths station-id)
+        (raw-data-from-paths c a1 a2 r1 r2))
+    (file-does-not-exist () nil)))
 
 (defun read-station-rtd-cache (station-id)
-  (let* ((cache-path (get-rtd-data-path station-id))
-         (rd (make-raw-data
-              (open (str:concat cache-path "c"))
-              (open (str:concat cache-path "a1"))
-              (open (str:concat cache-path "a2"))
-              (open (str:concat cache-path "r1"))
-              (open (str:concat cache-path "r2")))))
-    (prog1
-        (parse-rtd rd)
-      (mapc #'close (raw-data->list rd)))))
+  (multiple-value-bind (c a1 a2 r1 r2)
+      (get-station-rtd-cache-paths station-id)
+    (with-open-rd-files (rd c a1 a2 r1 r2)
+      (parse-rtd rd))))
 
-(defun get-rtd-data-date (raw-data)
-  (handler-case
-      (with-open-file (f (str:concat (get-rtd-data-path station-id) "c"))
-        (read-line f)
-        (let ((line1 (read-line f)))
-          (parse-date line1)))
-    (file-does-not-exist () nil)))
+(defun get-raw-data-time (rd)
+  "Retrieves the time from the next valid entry in the data. Generally, you will want to use this to check the first (newest)
+entry. Returns nil if data is at eof."
+  (let* ((c-line (raw-data-read-line rd))
+         (time (parse-date c-line)))
+    (cond (time time)                     ; Time parsed correctly, return it
+          (c-line (get-raw-data-time rd)) ; This must have been a header row, parse next row
+          (t nil))))                      ; Reached eof return nil
 
-(defun get-rtd-cache-date (station-id)
-  (handler-case
-      (with-open-file (f (str:concat (get-rtd-data-path station-id) "c"))
-        (read-line f)
-        (let ((line1 (read-line f)))
-          (parse-date line1)))
-    (file-does-not-exist () nil)))
+(defun get-rtd-cache-time (station-id)
+  (multiple-value-bind (c a1 a2 r1 r2)
+      (get-station-rtd-cache-paths station-id)
+    (with-open-rd-files (rd c a1 a2 r1 r2)
+      (get-raw-data-time rd))))
 
 ;;; Historical Data
 
@@ -314,6 +358,14 @@ The separation frequency is given in the spec file (which defines the 'c' parame
       ;; Return parsed data
       (reverse (parse-next-entry)))))
 
+(defun cache-station-hist (station-id raw-c raw-a1 raw-a2 raw-r1 raw-r2)
+  "Saves data to the historical data cache for the station with station-id."
+  (let ((time ())
+        (hist-data-path (ensure-hist-path-exists station-id)))
+    (mapcar (lambda (getter name)
+              (str:to-file (str:concat rtd-data-path name) (funcall getter raw-data)))
+            (list #'raw-data-c #'raw-data-a1 #'raw-data-a2 #'raw-data-r1 #'raw-data-r2)
+            '("c" "a1" "a2" "r1" "r2"))))
 
 (defun download-station-hist (station-id year-or-month)
   (labels ((get-year-data (char-key path)
@@ -343,10 +395,4 @@ The separation frequency is given in the spec file (which defines the 'c' parame
           (r1-data (get-data #\j "swr1"))
           (r2-data (get-data #\k "swr2")))
 
-      (parse-hist (make-raw-data
-                   (make-string-input-stream c-data)
-                   (make-string-input-stream a1-data)
-                   (make-string-input-stream a2-data)
-                   (make-string-input-stream r1-data)
-                   (make-string-input-stream r2-data))))))
-
+      (parse-hist (raw-data-from-strings c-data a1-data a2-data r1-data r2-data)))))
