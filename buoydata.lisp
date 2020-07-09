@@ -203,6 +203,74 @@ The separation frequency is given in the spec file (which defines the 'c' parame
 
 ;;; Historical Data
 
+(defun parse-hist (raw)
+  "Parses historical data formatted strings into a list of spectral-points. 
+
+Each parameter comes in a separate file (which are provided to parse-rtd as strings). Each line of each file starts with
+a 5-number date, and the values of the parameter for each frequency are given as: <val1> <val2> ...
+The separation frequency is given in the spec file (which defines the 'c' parameter)."
+  (let ((stat-freq-scan (ppcre:create-scanner "\\s+([0-9.]+)")) ; regex for getting the stat and freq
+        (freqs))                                                ; register for frquencies 
+    (labels ((parse-row (row date?)
+               "Parses a single row from one of the parameter files.
+
+                If date? or sep-freq? are non-nil, they will be captured from the row"
+               (let ((date (if date? (parse-date row) nil))
+                     (data))
+                 (ppcre:do-register-groups ((#'read-from-string stat))
+                     (stat-freq-scan
+                      row
+                      nil
+                      :start 16)
+                   (progn
+                     (setq data (cons (float stat) data))))
+                 (list (reverse data) date)))
+             (parse-all-rows (l-spec l-a1 l-a2 l-r1 l-r2)
+               "Recursively parses all rows (after they have been split into lines). This assumes that the header has been
+                skipped already."
+               (let* ((c-d (parse-row (car l-spec) t))
+                      (a1 (car (parse-row (car l-a1) nil)))
+                      (a2 (car (parse-row (car l-a2) nil)))
+                      (r1 (car (parse-row (car l-r1) nil)))
+                      (r2 (car (parse-row (car l-r2) nil)))
+                      (point (make-spectral-point
+                              (cadr c-d)                       ; time stamp
+                              (map 'vector #'make-spect-params ; params
+                                   freqs
+                                   (car c-d) ; c
+                                   a1                      
+                                   a2
+                                   r1
+                                   r2))))
+                 (if (every #'cdr (list l-spec l-a1 l-a2 l-r1 l-r2))
+                     (cons point (parse-all-rows (cdr l-spec) (cdr l-a1) (cdr l-a2) (cdr l-r1) (cdr l-r2)))
+                     `(,point)))))
+
+      (let ((c-lines (str:lines (raw-data-c raw)))
+            (a1-lines (str:lines (raw-data-a1 raw)))
+            (a2-lines (str:lines (raw-data-a2 raw)))
+            (r1-lines (str:lines (raw-data-r1 raw)))
+            (r2-lines (str:lines (raw-data-r2 raw))))
+
+        ;; Get the frequencies
+        (ppcre:do-register-groups ((#'read-from-string freq))
+            (stat-freq-scan
+             (car c-lines)
+             nil
+             :start 16)
+          (setq freqs (cons freq freqs)))
+
+        (setq freqs (reverse freqs)) ;; Reverse them to put them in order
+        
+        ;; Split each stat string by line
+        ;; Parse all rows, skipping the header line
+        (reverse (parse-all-rows
+                  (cdr c-lines)
+                  (cdr a1-lines)
+                  (cdr a2-lines)
+                  (cdr r1-lines)
+                  (cdr r2-lines)))))))
+
 (defun this-year ()
   (nth-value 5 (get-decoded-time)))
 
