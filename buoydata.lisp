@@ -1,5 +1,6 @@
 
-(declaim (optimize (debug 3)))
+;;(declaim (optimize speed))
+;;(declaim (optimize (debug 3)))
 
 (ql:quickload '(:dexador :plump :lquery :lparallel :uiop :str :cl-ppcre :bt-semaphore) :silent t)
 
@@ -227,19 +228,17 @@ The separation frequency is given in the spec file (which defines the 'c' parame
                        r2)
                   (nth 3 c-f-d-fsep)))) ; fsep
 
-             (parse-next-entry ()
+             (parse-next-entry (parsed)
                "Recursively reads lines from the raw data streams and parses them to create spectral points"
                (if (raw-data-eof-p rd)
-                   nil
-                   (cons
-                    (multiple-value-bind
-                     (c a1 a2 r1 r2)
-                     (raw-data-read-line rd)
-                     (parse-all-lines c a1 a2 r1 r2))
-                    (parse-next-entry)))))
+                   parsed
+                   (multiple-value-bind
+                         (c a1 a2 r1 r2)
+                       (raw-data-read-line rd)
+                     (parse-next-entry (cons (parse-all-lines c a1 a2 r1 r2) parsed))))))
 
       (raw-data-read-line rd) ;; Discard header
-      (reverse (parse-next-entry)))))
+      (parse-next-entry))))
 
 (defun get-station-rtd-cache-paths (station-id)
   (let ((cache-path (ensure-rtd-data-path-exists station-id)))
@@ -307,14 +306,16 @@ entry. Returns nil if data is at eof."
 
 ;;; Historical Data
 
+;; regex for getting the stat and freq
+(defvar *hist-stat-freq-scan* (ppcre:create-scanner "\\s+([0-9.]+)"))
+
 (defun parse-hist (rd)
   "Parses historical data formatted strings into a list of spectral-points. 
 
 Each parameter comes in a separate file (which are provided to parse-rtd as strings). Each line of each file starts with
 a 5-number date, and the values of the parameter for each frequency are given as: <val1> <val2> ...
 The separation frequency is given in the spec file (which defines the 'c' parameter)."
-  (let ((stat-freq-scan (ppcre:create-scanner "\\s+([0-9.]+)")) ; regex for getting the stat and freq
-        (freqs))                                                ; register for frquencies 
+  (let ((freqs))                                                ; register for frquencies 
     (labels ((parse-line (line c-data?)
                "Parses a single line from one of the parameter files.
 
@@ -322,14 +323,14 @@ The separation frequency is given in the spec file (which defines the 'c' parame
                (let ((date (if c-data? (parse-date line) nil))
                      (data))
                  (ppcre:do-register-groups ((#'read-from-string stat))
-                     (stat-freq-scan
+                     (*hist-stat-freq-scan*
                       line
                       nil
                       :start 16)
                    (setq data (cons (float stat) data)))
                  (list (reverse data) date)))
              
-             (parse-all-lines (c-line a1-line a2-line r1-line r2-line)
+             (parse-all-lines (c-line a1-line a2-line r1-line r2-line freqs)
                "Parses lines for all raw data streams"
                (let* ((c-d (parse-line c-line t))
                       (a1 (car (parse-line a1-line nil)))
@@ -346,20 +347,18 @@ The separation frequency is given in the spec file (which defines the 'c' parame
                        r1
                        r2))))
 
-             (parse-next-entry ()
+             (parse-next-entry (parsed)
                "Recursively reads lines from the raw data streams and parses them to create spectral points"
                (if (raw-data-eof-p rd)
-                   nil
-                   (cons
-                    (multiple-value-bind
-                          (c a1 a2 r1 r2)
-                        (raw-data-read-line rd)
-                      (parse-all-lines c a1 a2 r1 r2))
-                    (parse-next-entry)))))
+                   parsed
+                   (multiple-value-bind
+                         (c a1 a2 r1 r2)
+                       (raw-data-read-line rd)
+                     (parse-next-entry (cons (parse-all-lines c a1 a2 r1 r2 freqs) parsed))))))
 
       ;; Get the frequencies
       (ppcre:do-register-groups ((#'read-from-string freq))
-          (stat-freq-scan
+          (*hist-stat-freq-scan*
            (raw-data-read-line rd)      ; Returns first line of c data and throws away the other data files' lines
            nil
            :start 16)
@@ -369,7 +368,7 @@ The separation frequency is given in the spec file (which defines the 'c' parame
       (setq freqs (reverse freqs))
 
       ;; Return parsed data
-      (reverse (parse-next-entry)))))
+      (parse-next-entry '()))))
 
 (defun get-station-hist-cache-paths (station-id time)
   (let ((cache-path (ensure-hist-path-exists station-id time)))
@@ -390,10 +389,11 @@ The separation frequency is given in the spec file (which defines the 'c' parame
           (multiple-value-list (get-station-hist-cache-paths station-id rd-time))
           (raw-data->list rd))))
 
+
+;; There are two (so far) url formats for monthly data - annoying, I know. Most of them seem to be the first format, but
+;; (at least at the time of this writing) the latest month comes in the second format. The easiest thing to do is to just try
+;; the first url and then try the second if the first doesn't work.
 (defvar *hist-month-urls*
-  "There are two (so far) url formats for monthly data - annoying, I know. Most of them seem to be the first format, but
-(at least at the time of this writing) the latest month comes in the second format. The easiest thing to do is to just try
-the first url and then try the second if the first doesn't work."
   (list
    (lambda (station-id path time)
      (multiple-value-bind (m-num m-str) (get-month time)
@@ -458,4 +458,10 @@ If cache-data is non-nil, the downloaded data will be cached locally for future 
       (get-station-hist-cache-paths station-id time)
     (with-open-rd-files (rd c a1 a2 r1 r2)
       (parse-hist rd))))
+
+(defun get-hist-data (station-id time &optional cache-new-data)
+  (or (read-station-hist-cache station-id time)
+      (download-station-hist station-id time cache-new-data)))
+
+;; General Data Retrieval API
 
