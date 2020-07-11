@@ -47,6 +47,13 @@ is only really useful when multiple hits on the data are done within a few hours
 (defun this-year ()
   (nth-value 5 (get-decoded-time)))
 
+(defun get-year (time)
+  (nth-value 5 (decode-universal-time time)))
+
+(defun get-month (time)
+  (values (nth-value 4 (decode-universal-time time))
+          (local-time:format-timestring nil (local-time:universal-to-timestamp time) :format '(:short-month))))
+
 (defun get-hist-data-path-date (time)
   (multiple-value-bind (s m h d MM YY)
       (decode-universal-time time)
@@ -55,15 +62,22 @@ is only really useful when multiple hits on the data are done within a few hours
         YY)))
 
 (defun get-hist-data-path (station-id &optional month-or-year)
-  (str:concat (get-station-cache-path station-id) *hist-path* month-or-year))
+  (format nil "~A~A~A/" (get-station-cache-path station-id) *hist-path* month-or-year))
 
 (defun get-hist-data-path-from-time (station-id time)
   (get-hist-data-path station-id (get-hist-data-path-date time)))
 
-(defun ensure-hist-path-exists (station-id &optional month-or-year)
-  (let ((cache-path (get-hist-data-path station-id month-or-year)))
+(defun ensure-hist-path-exists (station-id &optional time)
+  (let ((cache-path (if time
+                        (get-hist-data-path-from-time station-id time)
+                        (get-hist-data-path station-id))))
     (ensure-directories-exist cache-path)
     cache-path))
+
+(defun try-get-url (url)
+  (handler-case
+      (dex:get url)
+    (dex:http-request-not-found () nil)))
 
 ;; ---------------------------------- Station metadata ------------------------------------
 
@@ -75,7 +89,7 @@ is only really useful when multiple hits on the data are done within a few hours
 (defun download-station-metadata (station-id)
   (let* ((loc-scan (ppcre:create-scanner "\\s+([0-9.]+) (N|S) ([0-9.]+) (E|W)"))
          (depth-scan (ppcre:create-scanner "\\s+Water depth: ([0-9.]+) m"))
-         (request (dex:get (format nil "https://www.ndbc.noaa.gov/station_page.php?station=~D&uom=E&tz=STN" station-id)))
+         (request (try-get-url (format nil "https://www.ndbc.noaa.gov/station_page.php?station=~D&uom=E&tz=STN" station-id)))
          (parsed-req (lquery:$ (lquery:initialize request)))
          (metadata-str (aref (lquery:$ parsed-req "#stn_metadata p" (text)) 0)) ; This comes as an annoying paragraph
          (lat)
@@ -228,7 +242,7 @@ The separation frequency is given in the spec file (which defines the 'c' parame
       (reverse (parse-next-entry)))))
 
 (defun get-station-rtd-cache-paths (station-id)
-  (let ((cache-path (get-rtd-data-path station-id)))
+  (let ((cache-path (ensure-rtd-data-path-exists station-id)))
         (values
          (str:concat cache-path "c")
          (str:concat cache-path "a1")
@@ -238,7 +252,6 @@ The separation frequency is given in the spec file (which defines the 'c' parame
 
 (defun cache-station-rtd (station-id rd)
   "Saves data to the real-time data cache for the station with station-id."
-  (ensure-rtd-data-path-exists station-id)
   (mapc (lambda (data path)
           (str:to-file path (uiop:slurp-stream-string data)))
         (multiple-value-list (get-station-rtd-cache-paths station-id))
@@ -247,7 +260,7 @@ The separation frequency is given in the spec file (which defines the 'c' parame
 (defun download-station-rtd (station-id &optional cache-data)
   "Downloads the real-time data for the specified station ID"
   (flet ((get-data (path)
-           (dex:get (format nil "https://www.ndbc.noaa.gov/data/realtime2/~D.~A" station-id path))))
+           (try-get-url (format nil "https://www.ndbc.noaa.gov/data/realtime2/~D.~A" station-id path))))
     (let ((c-data (get-data "data_spec"))
           (a1-data (get-data "swdir"))
           (a2-data (get-data "swdir2"))
@@ -358,41 +371,91 @@ The separation frequency is given in the spec file (which defines the 'c' parame
       ;; Return parsed data
       (reverse (parse-next-entry)))))
 
-(defun cache-station-hist (station-id raw-c raw-a1 raw-a2 raw-r1 raw-r2)
-  "Saves data to the historical data cache for the station with station-id."
-  (let ((time ())
-        (hist-data-path (ensure-hist-path-exists station-id)))
-    (mapcar (lambda (getter name)
-              (str:to-file (str:concat rtd-data-path name) (funcall getter raw-data)))
-            (list #'raw-data-c #'raw-data-a1 #'raw-data-a2 #'raw-data-r1 #'raw-data-r2)
-            '("c" "a1" "a2" "r1" "r2"))))
+(defun get-station-hist-cache-paths (station-id time)
+  (let ((cache-path (ensure-hist-path-exists station-id time)))
+        (values
+         (str:concat cache-path "c")
+         (str:concat cache-path "a1")
+         (str:concat cache-path "a2")
+         (str:concat cache-path "r1")
+         (str:concat cache-path "r2"))))
 
-(defun download-station-hist (station-id year-or-month)
-  (labels ((get-year-data (char-key path)
-             (dex:get
+(defun cache-station-hist (station-id rd)
+  "Saves data to the historical data cache for the station with station-id."
+  (let* ((rd-time (get-raw-data-time rd)))
+    (raw-data-reset rd)                         ; Rewind the raw data streams after reading the time
+    (mapc (lambda (path data)
+            (format t "writing to ~A~%" path)
+            (str:to-file path (uiop:slurp-stream-string data)))
+          (multiple-value-list (get-station-hist-cache-paths station-id rd-time))
+          (raw-data->list rd))))
+
+(defvar *hist-month-urls*
+  "There are two (so far) url formats for monthly data - annoying, I know. Most of them seem to be the first format, but
+(at least at the time of this writing) the latest month comes in the second format. The easiest thing to do is to just try
+the first url and then try the second if the first doesn't work."
+  (list
+   (lambda (station-id path time)
+     (multiple-value-bind (m-num m-str) (get-month time)
+       (format
+        nil
+        "https://www.ndbc.noaa.gov/view_text_file.php?filename=~D~D~D.txt.gz&dir=data/~A/~A/"
+        station-id
+        m-num
+        (get-year time)
+        path
+        m-str)))
+   (lambda (station-id path time)
+     (format
+      nil
+      "https://www.ndbc.noaa.gov/data/~A/~A/~D.txt"
+      path
+      (nth-value 1 (get-month time))
+      station-id))))
+
+(defun download-station-hist (station-id time &optional cache-data)
+  "Historical data is kept in yearly chunks for each year up to the current one. For the current year, data is kept in monthly
+chunks. The url format for each is slightly different, so we need to choose the url based on whether time is from this year
+(at the time that this function is called) or from a previous year.
+
+If cache-data is non-nil, the downloaded data will be cached locally for future use."
+       (labels ((get-year-data (char-key path)
+                  "Gets data at a 'year' url"
+             (try-get-url
               (format
                nil
                "https://www.ndbc.noaa.gov/view_text_file.php?filename=~D~C~D.txt.gz&dir=data/historical/~A/"
                station-id
                char-key
-               year-or-month
+               (get-year time)
                path)))
            (get-month-data (path)
-             (dex:get
-              (format
-               nil
-               "https://www.ndbc.noaa.gov/data/~A/~A/~D.txt"
-               path
-               year-or-month
-               station-id)))
+             (or (try-get-url (funcall (car *hist-month-urls*) station-id path time))
+                 (try-get-url (funcall (cadr *hist-month-urls*) station-id path time))))
            (get-data (char-key path)
-             (if (numberp year-or-month)
-                 (get-year-data char-key path)
-                 (get-month-data path))))
-    (let ((c-data (get-data #\w "swden"))
-          (a1-data (get-data #\d "swdir"))
-          (a2-data (get-data #\i "swdir2"))
-          (r1-data (get-data #\j "swr1"))
-          (r2-data (get-data #\k "swr2")))
+             (if (= (get-year time) (this-year))
+                 (get-month-data path)
+                 (get-year-data char-key path))))
+    (let ((data `(,(get-data #\w "swden")
+                   ,(get-data #\d "swdir")
+                   ,(get-data #\i "swdir2")
+                   ,(get-data #\j "swr1")
+                   ,(get-data #\k "swr2"))))
 
-      (parse-hist (raw-data-from-strings c-data a1-data a2-data r1-data r2-data)))))
+      (when (every #'stringp data)
+        (when cache-data
+          (format t "starting thread~%")
+          ;; Do it in a thread so we don't hang this up
+          (bt:make-thread
+           (lambda ()
+             (format t "caching data for station ~D~%" station-id)
+             (cache-station-hist station-id (apply #'raw-data-from-strings data)))))
+
+        (parse-hist (apply #'raw-data-from-strings data))))))
+
+(defun read-station-hist-cache (station-id time)
+  (multiple-value-bind (c a1 a2 r1 r2)
+      (get-station-hist-cache-paths station-id time)
+    (with-open-rd-files (rd c a1 a2 r1 r2)
+      (parse-hist rd))))
+
