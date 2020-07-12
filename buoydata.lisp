@@ -169,7 +169,7 @@ is only really useful when multiple hits on the data are done within a few hours
 (defvar *date-scan* (ppcre:create-scanner "(\\d{4}) (\\d{2}) (\\d{2}) (\\d{2}) (\\d{2})")
   "Regex for retrieving the date from a buoy data row")
 
-(defun parse-date (row-str)
+(defun parse-time (row-str)
   (ppcre:register-groups-bind
    ((#'parse-integer year month day hour min))
    (*date-scan*
@@ -178,7 +178,7 @@ is only really useful when multiple hits on the data are done within a few hours
 
 ;;; Real Time Data
 
-(defun parse-rtd (rd)
+(defun parse-rtd (rd &optional start-time end-time)
   "Parses real-time data formatted strings into a list of spectral-points. 
 
 Each parameter comes in a separate file (which are provided to parse-rtd as strings). Each line of each file starts with
@@ -189,9 +189,8 @@ The separation frequency is given in the spec file (which defines the 'c' parame
     (labels ((parse-line (line c-data?)
                "Parses a single line from one of the parameter files.
 
-                If c-data? is non-nil, the freqs and fsep values will be captured"
-               (let ((date (if c-data? (parse-date line) nil))
-                     (fsep (if c-data?
+                If c-data? is non-nil, the fsep data and frequencies are captured"
+               (let ((fsep (if c-data?
                                (ppcre:register-groups-bind ((#'read-from-string fsep))
                                    (fsep-scan
                                     line
@@ -208,25 +207,25 @@ The separation frequency is given in the spec file (which defines the 'c' parame
                    (progn
                      (setq data (cons stat data))
                      (setq freqs (cons freq freqs))))
-                 (list (reverse data) (reverse freqs) date fsep)))
+                 (list (reverse data) (reverse freqs) fsep)))
 
-             (parse-all-lines (c-line a1-line a2-line r1-line r2-line)
+             (parse-all-lines (c-line a1-line a2-line r1-line r2-line time)
                "Parses lines for all raw data streams"
-               (let* ((c-f-d-fsep (parse-line c-line t))
+               (let* ((c-f-fsep (parse-line c-line t))
                       (a1 (car (parse-line a1-line nil)))
                       (a2 (car (parse-line a2-line nil)))
                       (r1 (car (parse-line r1-line nil)))
                       (r2 (car (parse-line r2-line nil))))
                  (make-spectral-point
-                  (nth 2 c-f-d-fsep)               ; time stamp
+                  time
                   (map 'vector #'make-spect-params ; params
-                       (nth 1 c-f-d-fsep)          ; f
-                       (car c-f-d-fsep)            ; c
+                       (nth 1 c-f-fsep)          ; f
+                       (car c-f-fsep)            ; c
                        a1                      
                        a2
                        r1
                        r2)
-                  (nth 3 c-f-d-fsep)))) ; fsep
+                  (nth 2 c-f-fsep)))) ; fsep
 
              (parse-next-entry (parsed)
                "Recursively reads lines from the raw data streams and parses them to create spectral points"
@@ -235,10 +234,17 @@ The separation frequency is given in the spec file (which defines the 'c' parame
                    (multiple-value-bind
                          (c a1 a2 r1 r2)
                        (raw-data-read-line rd)
-                     (parse-next-entry (cons (parse-all-lines c a1 a2 r1 r2) parsed))))))
+                     (let ((time (parse-time c)))
+                       ;; Remember that rtd comes in reverse time
+                       (cond ((and start-time (< time start-time)) ; We passed the start time, so return
+                              parsed)
+                             ((and end-time (> time end-time))     ; We haven't reached the end time, so keep going
+                              (parse-next-entry parsed))
+                             (t
+                              (parse-next-entry (cons (parse-all-lines c a1 a2 r1 r2 time) parsed)))))))))
 
       (raw-data-read-line rd) ;; Discard header
-      (parse-next-entry))))
+      (parse-next-entry '()))))
 
 (defun get-station-rtd-cache-paths (station-id)
   (let ((cache-path (ensure-rtd-data-path-exists station-id)))
@@ -256,7 +262,7 @@ The separation frequency is given in the spec file (which defines the 'c' parame
         (multiple-value-list (get-station-rtd-cache-paths station-id))
         (raw-data->list rd)))
 
-(defun download-station-rtd (station-id &optional cache-data)
+(defun download-station-rtd (station-id &optional start-time end-time cache-data)
   "Downloads the real-time data for the specified station ID"
   (flet ((get-data (path)
            (try-get-url (format nil "https://www.ndbc.noaa.gov/data/realtime2/~D.~A" station-id path))))
@@ -272,28 +278,28 @@ The separation frequency is given in the spec file (which defines the 'c' parame
          (lambda ()
            (cache-station-rtd station-id (raw-data-from-strings c-data a1-data a2-data r1-data r2-data)))))
 
-      (parse-rtd (raw-data-from-strings c-data a1-data a2-data r1-data r2-data)))))
+      (parse-rtd (raw-data-from-strings c-data a1-data a2-data r1-data r2-data) start-time end-time))))
 
-(defun open-station-rtd-cache (station-id)
-  "Opens the real-time data files from the rtd cache for a station. These files will need to be manually closed. It's probably
-better to use with-open-rd-files if you can."
-  (handler-case
-      (multiple-value-bind (c a1 a2 r1 r2)
-          (get-station-rtd-cache-paths station-id)
-        (raw-data-from-paths c a1 a2 r1 r2))
-    (file-does-not-exist () nil)))
+;; (defun open-station-rtd-cache (station-id)
+;;   "Opens the real-time data files from the rtd cache for a station. These files will need to be manually closed. It's probably
+;; better to use with-open-rd-files if you can."
+;;   (handler-case
+;;       (multiple-value-bind (c a1 a2 r1 r2)
+;;           (get-station-rtd-cache-paths station-id)
+;;         (raw-data-from-paths c a1 a2 r1 r2))
+;;     (file-does-not-exist () nil)))
 
-(defun read-station-rtd-cache (station-id)
+(defun read-station-rtd-cache (station-id &optional start-time end-time)
   (multiple-value-bind (c a1 a2 r1 r2)
       (get-station-rtd-cache-paths station-id)
     (with-open-rd-files (rd c a1 a2 r1 r2)
-      (parse-rtd rd))))
+      (parse-rtd rd start-time end-time))))
 
 (defun get-raw-data-time (rd)
   "Retrieves the time from the next valid entry in the data. Generally, you will want to use this to check the first (newest)
 entry. Returns nil if data is at eof."
   (let* ((c-line (raw-data-read-line rd))
-         (time (parse-date c-line)))
+         (time (parse-time c-line)))
     (cond (time time)                     ; Time parsed correctly, return it
           (c-line (get-raw-data-time rd)) ; This must have been a header row, parse next row
           (t nil))))                      ; Reached eof return nil
@@ -317,9 +323,7 @@ a 5-number date, and the values of the parameter for each frequency are given as
 The separation frequency is given in the spec file (which defines the 'c' parameter)."
   (let ((freqs))                                                ; register for frquencies 
     (labels ((parse-line (line)
-               "Parses a single line from one of the parameter files.
-
-                If c-data? is non-nil, the date will be captured"
+               "Parses a single line from one of the parameter files."
                (let ((data))
                  (ppcre:do-register-groups ((#'read-from-string stat))
                      (*hist-stat-freq-scan*
@@ -329,7 +333,7 @@ The separation frequency is given in the spec file (which defines the 'c' parame
                    (setq data (cons (float stat) data)))
                  (reverse data)))
              
-             (parse-all-lines (c-line a1-line a2-line r1-line r2-line date)
+             (parse-all-lines (c-line a1-line a2-line r1-line r2-line time)
                "Parses lines for all raw data streams"
                (let* ((c (parse-line c-line))
                       (a1 (parse-line a1-line))
@@ -337,7 +341,7 @@ The separation frequency is given in the spec file (which defines the 'c' parame
                       (r1 (parse-line r1-line))
                       (r2 (parse-line r2-line)))
                  (make-spectral-point
-                  date
+                  time
                   (map 'vector #'make-spect-params ; params
                        freqs
                        c
@@ -353,13 +357,13 @@ The separation frequency is given in the spec file (which defines the 'c' parame
                    (multiple-value-bind
                          (c a1 a2 r1 r2)
                        (raw-data-read-line rd)
-                     (let ((date (parse-date c)))
-                       (cond ((and start-time (< date start-time)) ; We haven't reached the start time yet so keep moving
+                     (let ((time (parse-time c)))
+                       (cond ((and start-time (< time start-time)) ; We haven't reached the start time yet so keep moving
                               (parse-next-entry parsed))
-                             ((and end-time (> date end-time))     ; We passed the end time, so return       
+                             ((and end-time (> time end-time))     ; We passed the end time, so return       
                               parsed)
                              (t
-                              (parse-next-entry (cons (parse-all-lines c a1 a2 r1 r2 date) parsed)))))))))
+                              (parse-next-entry (cons (parse-all-lines c a1 a2 r1 r2 time) parsed)))))))))
 
       ;; Get the frequencies
       (ppcre:do-register-groups ((#'read-from-string freq))
