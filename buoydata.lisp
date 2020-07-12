@@ -309,39 +309,38 @@ entry. Returns nil if data is at eof."
 ;; regex for getting the stat and freq
 (defvar *hist-stat-freq-scan* (ppcre:create-scanner "\\s+([0-9.]+)"))
 
-(defun parse-hist (rd)
+(defun parse-hist (rd &optional start-time end-time)
   "Parses historical data formatted strings into a list of spectral-points. 
 
 Each parameter comes in a separate file (which are provided to parse-rtd as strings). Each line of each file starts with
 a 5-number date, and the values of the parameter for each frequency are given as: <val1> <val2> ...
 The separation frequency is given in the spec file (which defines the 'c' parameter)."
   (let ((freqs))                                                ; register for frquencies 
-    (labels ((parse-line (line c-data?)
+    (labels ((parse-line (line)
                "Parses a single line from one of the parameter files.
 
                 If c-data? is non-nil, the date will be captured"
-               (let ((date (if c-data? (parse-date line) nil))
-                     (data))
+               (let ((data))
                  (ppcre:do-register-groups ((#'read-from-string stat))
                      (*hist-stat-freq-scan*
                       line
                       nil
                       :start 16)
                    (setq data (cons (float stat) data)))
-                 (list (reverse data) date)))
+                 (reverse data)))
              
-             (parse-all-lines (c-line a1-line a2-line r1-line r2-line freqs)
+             (parse-all-lines (c-line a1-line a2-line r1-line r2-line date)
                "Parses lines for all raw data streams"
-               (let* ((c-d (parse-line c-line t))
-                      (a1 (car (parse-line a1-line nil)))
-                      (a2 (car (parse-line a2-line nil)))
-                      (r1 (car (parse-line r1-line nil)))
-                      (r2 (car (parse-line r2-line nil))))
+               (let* ((c (parse-line c-line))
+                      (a1 (parse-line a1-line))
+                      (a2 (parse-line a2-line))
+                      (r1 (parse-line r1-line))
+                      (r2 (parse-line r2-line)))
                  (make-spectral-point
-                  (cadr c-d)                       ; time stamp
+                  date
                   (map 'vector #'make-spect-params ; params
                        freqs
-                       (car c-d)        ; c
+                       c
                        a1                      
                        a2
                        r1
@@ -354,7 +353,13 @@ The separation frequency is given in the spec file (which defines the 'c' parame
                    (multiple-value-bind
                          (c a1 a2 r1 r2)
                        (raw-data-read-line rd)
-                     (parse-next-entry (cons (parse-all-lines c a1 a2 r1 r2 freqs) parsed))))))
+                     (let ((date (parse-date c)))
+                       (cond ((and start-time (< date start-time)) ; We haven't reached the start time yet so keep moving
+                              (parse-next-entry parsed))
+                             ((and end-time (> date end-time))     ; We passed the end time, so return       
+                              parsed)
+                             (t
+                              (parse-next-entry (cons (parse-all-lines c a1 a2 r1 r2 date) parsed)))))))))
 
       ;; Get the frequencies
       (ppcre:do-register-groups ((#'read-from-string freq))
@@ -413,27 +418,30 @@ The separation frequency is given in the spec file (which defines the 'c' parame
       (nth-value 1 (get-month time))
       station-id))))
 
-(defun download-station-hist (station-id time &optional cache-data)
+(defun download-station-hist (station-id start-time &optional end-time cache-data)
   "Historical data is kept in yearly chunks for each year up to the current one. For the current year, data is kept in monthly
 chunks. The url format for each is slightly different, so we need to choose the url based on whether time is from this year
-(at the time that this function is called) or from a previous year.
+\(at the time that this function is called\) or from a previous year.
+
+download-station-hist will download all data for the year/month of the start-time parameter, and it will parse the data until
+the end-time or the end of the data is reached.
 
 If cache-data is non-nil, the downloaded data will be cached locally for future use."
-       (labels ((get-year-data (char-key path)
-                  "Gets data at a 'year' url"
+  (labels ((get-year-data (char-key path)
+             "Gets data at a 'year' url"
              (try-get-url
               (format
                nil
                "https://www.ndbc.noaa.gov/view_text_file.php?filename=~D~C~D.txt.gz&dir=data/historical/~A/"
                station-id
                char-key
-               (get-year time)
+               (get-year start-time)
                path)))
            (get-month-data (path)
-             (or (try-get-url (funcall (car *hist-month-urls*) station-id path time))
-                 (try-get-url (funcall (cadr *hist-month-urls*) station-id path time))))
+             (or (try-get-url (funcall (car *hist-month-urls*) station-id path start-time))
+                 (try-get-url (funcall (cadr *hist-month-urls*) station-id path start-time))))
            (get-data (char-key path)
-             (if (= (get-year time) (this-year))
+             (if (= (get-year start-time) (this-year))
                  (get-month-data path)
                  (get-year-data char-key path))))
     (let ((data `(,(get-data #\w "swden")
@@ -444,24 +452,44 @@ If cache-data is non-nil, the downloaded data will be cached locally for future 
 
       (when (every #'stringp data)
         (when cache-data
-          (format t "starting thread~%")
           ;; Do it in a thread so we don't hang this up
           (bt:make-thread
            (lambda ()
-             (format t "caching data for station ~D~%" station-id)
              (cache-station-hist station-id (apply #'raw-data-from-strings data)))))
 
-        (parse-hist (apply #'raw-data-from-strings data))))))
+        (parse-hist (apply #'raw-data-from-strings data) start-time end-time)))))
 
-(defun read-station-hist-cache (station-id time)
+(defun read-station-hist-cache (station-id start-time &optional end-time)
   (multiple-value-bind (c a1 a2 r1 r2)
-      (get-station-hist-cache-paths station-id time)
+      (get-station-hist-cache-paths station-id start-time)
     (with-open-rd-files (rd c a1 a2 r1 r2)
-      (parse-hist rd))))
+      (parse-hist rd start-time end-time))))
 
-(defun get-hist-data (station-id time &optional cache-new-data)
-  (or (read-station-hist-cache station-id time)
-      (download-station-hist station-id time cache-new-data)))
+(defun get-hist-data (station-id start-time end-time &optional cache-new-data)
+  (labels ((get-data (start)
+             (format t
+                     "start: ~A~%"
+                     (local-time:format-timestring nil (local-time:universal-to-timestamp start)
+                                                   :format local-time:+asctime-format+))
+             (or (read-station-hist-cache station-id start end-time)
+                 (download-station-hist station-id start end-time cache-new-data))))
+    (do* ((next-data (get-data start-time) (get-data next-start))
+          (data next-data (append next-data data))
+          (next-start))
+         ((not next-data) (reverse data)) ; We're done when next-data is empty. This is sloppy and inefficient, but it works
+      
+      ;; Make sure that the next start time is at the beginning of the next hist file
+      ;; This will be the beginning of the next month in all cases
+      (let* ((last-end (spectral-point-ts (car next-data))))
+        (format t
+                     "last-end: ~A~%"
+                     (local-time:format-timestring nil (local-time:universal-to-timestamp last-end)
+                                                   :format local-time:+asctime-format+))
+        (setq next-start
+              (multiple-value-bind (s m h d mon yr) (decode-universal-time last-end)
+                (let* ((mon (1+ mon))
+                       (yr (if (> mon 12) (1+ yr) yr)))
+                  (encode-universal-time 0 0 0 1 (1+ (mod (1- mon) 12)) yr))))))))
 
 ;; General Data Retrieval API
 
