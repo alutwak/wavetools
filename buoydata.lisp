@@ -91,12 +91,105 @@ error. Other request errors are not handled yet."
       (dex:get url)
     (dex:http-request-not-found () nil)))
 
-;; ---------------------------------- Station metadata ------------------------------------
+;; ---------------------------------- Station ------------------------------------
 
-(defstruct (station-metadata (:constructor make-station-metadata (lat lon water-depth)))
-  (lat 0.0 :type float :read-only t)
-  (lon 0.0 :type float :read-only t)
-  (water-depth 0.0 :type float :read-only t))
+(defun init-data-vect ()
+  (make-array 100 :fill-pointer 0 :adjustable t))
+
+(defun reset-data-vect (data)
+  (setf (fill-pointer data) 0))
+
+;; Defines the metadata for a station
+(lisp-binary:defbinary station-metadata ()
+  (lat 999.9 :type float)
+  (lon 999.9 :type float)
+  (depth 0.0 :type float)
+  (freqs #() :type (lisp-binary:counted-array 1 float)))
+
+(defclass station ()
+  ((id
+    :initarg :id
+    :accessor id
+    :type integer
+    :documentation "The id value for the station")
+   (metadata
+    :initarg :metadata
+    :initform (make-station-metadata)
+    :accessor metadata
+    :type station-metadata
+    :documentation "Metadata for the station")
+   (data
+    :initarg :data
+    :initform (init-data-vect)
+    :accessor data
+    :type vector
+    :documentation "Data that is currently loaded for the station")
+   (end
+    :initform 0
+    :reader end
+    :type integer
+    :documentation "The last time stamp of the data")))
+
+
+(defgeneric freqs (station)
+  (:documentation "Returns the frequency array for the station"))
+
+(defgeneric (setf freqs) (station freqs)
+  (:documentation "Sets the frequency array for the station"))
+
+(defgeneric freqs-defined (station)
+  (:documentation "Returns freqs if they have been defined for the station and nil otherwise"))
+
+(defgeneric spoint-size (station)
+  (:documentation "Returns the number of frequencies defined for each of this station's spectral points"))
+
+(defgeneric lat (station)
+  (:documentation "Returns the latitude of the station"))
+
+(defgeneric lon (station)
+  (:documentation "Returns the longitude of the station"))
+
+(defgeneric depth (station)
+  (:documentation "Returns the depth of the station"))
+
+(defgeneric get-spectrum (station time)
+  (:documentation "Returns the directional spectrum of the station at the specified time, if it exists"))
+
+(defgeneric station-push (station sp)
+  (:documentation "Pushes a spectral point onto end of the station's data"))
+
+(defgeneric begin (station)
+  (:documentation "Returns the first time stamp of the station's data"))
+
+(defmethod freqs ((station station))
+  (station-metadata-freqs (metadata station)))
+
+(defmethod (setf freqs) ((freqs simple-vector) (station station))
+  (setf (station-metadata-freqs (metadata station)) freqs))
+
+(defmethod freqs-defined ((station station))
+  (let ((freqs (freqs station)))
+    (when (> (length freqs) 0)
+      freqs)))
+
+(defmethod spoint-size ((station station))
+  (length (freqs station)))
+
+(defmethod lat ((station station))
+  (station-metadata-lat (metadata station)))
+
+(defmethod lon ((station station))
+  (station-metadata-lon (metadata station)))
+
+(defmethod depth ((station station))
+  (station-metadata-depth (metadata station)))
+
+(defmethod station-push ((station station) (sp spectral-point))
+  (setf (slot-value station 'end) (spectral-point-ts sp))
+  (vector-push-extend sp (data station)))
+
+(defmethod begin ((station station))
+  (spectral-point-ts (aref (data station) 0)))
 
 (defun download-station-metadata (station-id)
   (let* ((loc-scan (ppcre:create-scanner "\\s+([0-9.]+) (N|S) ([0-9.]+) (E|W)"))
@@ -107,11 +200,13 @@ error. Other request errors are not handled yet."
          (lat)
          (lon)
          (water-depth))
-    (dolist (line (str:lines metadata-str) (make-station-metadata lat lon water-depth))
-      (let* ((lat-lon? (ppcre:register-groups-bind ((#'read-from-string lat ltdir lon lndir)) 
+    (dolist (line (str:lines metadata-str) (make-station-metadata :lat lat :lon lon :depth water-depth))
+      (let* ((lat-lon? (ppcre:register-groups-bind
+                           ((#'read-from-string lat ltdir lon lndir)) 
                            (loc-scan line)
                          (cons (* lat (if (string= ltdir "S") -1 1)) (* lon (if (string= lndir "E") -1 1)))))
-             (w-d? (ppcre:register-groups-bind ((#'read-from-string depth))
+             (w-d? (ppcre:register-groups-bind
+                       ((#'read-from-string depth))
                        (depth-scan line)
                      (float depth))))
         (when lat-lon?
@@ -200,20 +295,7 @@ before closing the files."
 
 ;;; Data Caching
 
-(defun init-data-vect ()
-  (make-array 100 :fill-pointer 0 :adjustable t))
-
-(defun reset-data-vect (data)
-  (setf (fill-pointer data) 0))
-
-;; (defun write-cache (data path &key (if-exists :error))
-;;   (lisp-binary:with-open-binary-file (f path :direction :output :if-exists if-exists)
-;;     (map nil
-;;          (lambda (pt)
-;;            (lisp-binary:write-binary pt f))
-;;          data)))
-
-(defun read-cache (data path start-time &optional end-time)
+(defun read-data-cache (station path start-time &optional end-time)
   (let ((end-time (if end-time end-time (get-universal-time))))
     (lisp-binary:with-open-binary-file (f path :direction :input)
       (labels ((read-data ()
@@ -232,16 +314,22 @@ before closing the files."
                           (read-data))
                          (t
                           ;; This is data we want to return. Append it and keep going
-                          (vector-push-extend sp data)
+                          (station-push station sp)
                           (read-data))))))
         (read-data)))))
 
+(defun read-metadata-cache (path)
+  (lisp-binary:with-open-binary-file (f path :direction :input)
+    (lisp-binary:read-binary 'station-metadata f)))
+
+(defun write-metadata-cache (path &key (if-exists :error))
+  (lisp-binary:with-open-binary-file (f path :direction :output :if-exists if-exists)))
 
 ;;; Real Time Data
 
-(defun parse-rtd (data rd &optional start-time end-time cache-stream)
+(defun parse-rtd (station rd &optional start-time end-time cache-stream)
   "Parses real-time data formatted strings into the data argument, which must be an adjustable vector. Only data points with
-  time stamps between start-time and end-time will be pushed into the data vector. If cache-stream is not nil, it must be a
+  time stamps between start-time and end-time will be station-pushed into the data vector. If cache-stream is not nil, it must be a
   binary stream and all data points will be written to that stream.
 
   Each parameter comes in a separate file (which are provided to parse-rtd as strings). Each line of each file starts with a
@@ -249,10 +337,9 @@ before closing the files."
   separation frequency is given in the spec file (which defines the 'c' parameter).
 
   Returns t if end-time was reached and nil otherwise"
-  (let ((fsep-scan (ppcre:create-scanner "([0-9.]+)"))               ; regex for getting the fsep
-        (stat-scan (ppcre:create-scanner "([0-9.]+) \\([0-9.]+\\)")) ; regex for getting the stats
-        (freq-scan (ppcre:create-scanner "[0-9.]+ \\(([0-9.]+)\\)")) ; regex for getting the freqs
-        (freqs))
+  (let ((fsep-scan (ppcre:create-scanner "([0-9.]+)"))                ; regex for getting the fsep
+        (stat-scan (ppcre:create-scanner "([0-9.]+) \\([0-9.]+\\)"))  ; regex for getting the stats
+        (freq-scan (ppcre:create-scanner "[0-9.]+ \\(([0-9.]+)\\)"))) ; regex for getting the freqs
     (labels ((parse-line (line c-data?)
                "Parses a single line from one of the parameter files.
 
@@ -264,7 +351,7 @@ before closing the files."
                                     :start 17)
                                  fsep)
                                nil))
-                     (data (make-array (length freqs) :element-type 'float :initial-element 0.0))
+                     (data (make-array (spoint-size station) :element-type 'float :initial-element 0.0))
                      (dref -1))
                  (ppcre:do-register-groups ((#'read-from-string stat))
                      (stat-scan
@@ -282,7 +369,7 @@ before closing the files."
                       (a2 (car (parse-line a2-line nil)))
                       (r1 (car (parse-line r1-line nil)))
                       (r2 (car (parse-line r2-line nil))))
-                 (make-spect-point time freqs (car c-fsep) a1 a2 r1 r2 (cadr c-fsep))))
+                 (make-spect-point time (car c-fsep) a1 a2 r1 r2 (cadr c-fsep))))
 
              (parse-next-entry (parsed)
                "Recursively reads lines from the raw data streams and parses them to create spectral points"
@@ -294,37 +381,41 @@ before closing the files."
                        parsed
                        (parse-next-entry (cons (parse-all-lines c a1 a2 r1 r2 time) parsed)))))))
 
-      ;; Get the frequencies
-      (raw-data-read-line rd) ;; Discard header      
-      (ppcre:do-register-groups ((#'read-from-string freq))
-          (freq-scan
-           (raw-data-read-line rd)
-           nil
-           :start 23)
-        (setq freqs (cons freq freqs)))
-      (setq freqs (apply #'vector (reverse freqs)))
+      ;; Get the frequencies if we don't have them yet
+      (when (not (freqs-defined station))
+          (raw-data-read-line rd) ;; Discard header      
+          (let ((freqs))
+            (ppcre:do-register-groups ((#'read-from-string freq))
+                (freq-scan
+                 (raw-data-read-line rd)
+                 nil
+                 :start 23)
+              (setq freqs (cons freq freqs)))
+            (setf (freqs station) (apply #'vector (reverse freqs))))
 
-      (raw-data-reset rd)     ;; Reset the data
+          (raw-data-reset rd))     ;; Reset the data
+
+      ;; Now, parse the data
       (raw-data-read-line rd) ;; Discard header
 
       ;; RT data comes in reverse time order, so we need to cons each line and then map back over to put it in order
       (let ((parsed (parse-next-entry '())))
         (reduce (lambda (reached-end sp)
-                ;; Write everything to the cache when it's there
-                (when cache-stream (lisp-binary:write-binary sp cache-stream))
+                  ;; Write everything to the cache when it's there
+                  (when cache-stream (lisp-binary:write-binary sp cache-stream))
 
-                ;; Only return data that's between the start and end times when they're given
-                (let ((time (spectral-point-ts sp)))
-                  (cond ((and start-time (< time start-time))
-                         nil)
-                        ((and end-time (> time end-time))
-                         'end)
-                        (t
-                         (vector-push-extend sp data)
-                         nil))))
+                  ;; Only return data that's between the start and end times when they're given
+                  (let ((time (spectral-point-ts sp)))
+                    (cond ((and start-time (< time start-time))
+                           nil)
+                          ((and end-time (> time end-time))
+                           'end)
+                          (t
+                           (station-push station sp)
+                           nil))))
                 parsed)))))
 
-(defun download-station-rtd (data station-id &optional start-time end-time cache-data)
+(defun download-station-rtd (station &optional start-time end-time cache-data)
   "Downloads the real-time data for the specified station id, and appends it to the data argument, which must be an
   adjustable vector. If start-time is non-nil, then only data points after that \(universal\) time will be appended. If
   end-time is non-nil then only data points before that time will be appended. If cache-data is non-nil, the all downloaded
@@ -332,7 +423,7 @@ before closing the files."
 
   Returns non-nil value if end-time was reached and nil otherwise."
   (flet ((get-data (path)
-           (try-get-url (format nil "https://www.ndbc.noaa.gov/data/realtime2/~D.~A" station-id path))))
+           (try-get-url (format nil "https://www.ndbc.noaa.gov/data/realtime2/~D.~A" (id station) path))))
     (let ((raw-data `(,(get-data "data_spec")
                        ,(get-data "swdir")
                        ,(get-data "swdir2")
@@ -341,88 +432,84 @@ before closing the files."
 
       ;; Parse using cache file if we're caching, and without it if we're not
       (if cache-data 
-          (lisp-binary:with-open-binary-file (f (ensure-rtd-data-path-exists station-id) :direction :output)
-            (parse-rtd data (apply #'raw-data-from-strings raw-data) start-time end-time f))
-          (parse-rtd data (apply #'raw-data-from-strings raw-data) start-time end-time)))))
+          (lisp-binary:with-open-binary-file (f (ensure-rtd-data-path-exists (id station)) :direction :output)
+            (parse-rtd station (apply #'raw-data-from-strings raw-data) start-time end-time f))
+          (parse-rtd station (apply #'raw-data-from-strings raw-data) start-time end-time)))))
 
-(defun read-station-rtd-cache (data station-id &optional (start-time 0) end-time)
+(defun read-station-rtd-cache (station &optional (start-time 0) end-time)
   "Reads real-time data from the rtd cache for the given station id. If start-time is non-nil, then only data points after
 that \(universal\) time will be returned. If end-time is non-nil then only data points before that time will be returned. 
 
 If the rtd cache for the given station does not exist, then the return value will be nil."
-  (let ((cache-path (get-rtd-data-path station-id)))
-    (read-cache data cache-path start-time end-time)))
+  (let ((cache-path (get-rtd-data-path (id station))))
+    (read-data-cache station cache-path start-time end-time)))
+
 
 ;;; Historical Data
 
 ;; regex for getting the stat and freq
 (defvar *hist-stat-freq-scan* (ppcre:create-scanner "\\s+([0-9.]+)"))
 
-(defun parse-hist (data rd &optional start-time end-time cache-stream)
+(defun parse-hist (station rd &optional start-time end-time cache-stream)
   "Parses historical data formatted strings into the data argument, which must be an adjustable vector. Only data points with
-  time stamps between start-time and end-time will be pushed into the data vector. If cache-stream is not nil, it must be a
+  time stamps between start-time and end-time will be station-pushed into the data vector. If cache-stream is not nil, it must be a
   binary stream and all data points will be written to that stream.
 
   Each parameter comes in a separate stream. Each line of each stream starts with a 5-number date, followed by a series of
   space-separated floating point values. The header for each file contains the set of frequencies, one for each row of data.
 
   Returns t if end-time was reached and nil otherwise."
-  (let ((freqs))                                                ; register for frquencies 
-    (labels ((parse-line (line)
-               "Parses a single line from one of the parameter files."
-               (let ((data (make-array (length freqs) :element-type 'float :initial-element 0.0))
-                     (dref -1))
-                 (ppcre:do-register-groups ((#'read-from-string stat))
-                     (*hist-stat-freq-scan*
-                      line
-                      nil
-                      :start 16)
-                   (setf (aref data (incf dref)) (float stat)))
-                 data))
-             
-             (parse-all-lines (c-line a1-line a2-line r1-line r2-line time)
-               "Parses lines for all raw data streams"
-               (let* ((c (parse-line c-line))
-                      (a1 (parse-line a1-line))
-                      (a2 (parse-line a2-line))
-                      (r1 (parse-line r1-line))
-                      (r2 (parse-line r2-line)))
-                 (make-spect-point time freqs c a1 a2 r1 r2)))
+  (labels ((parse-line (line)
+             "Parses a single line from one of the parameter files."
+             (let ((data (make-array (spoint-size station) :element-type 'float :initial-element 0.0))
+                   (dref -1))
+               (ppcre:do-register-groups ((#'read-from-string stat))
+                   (*hist-stat-freq-scan*
+                    line
+                    nil
+                    :start 16)
+                 (setf (aref data (incf dref)) (float stat)))
+               data))
+           
+           (parse-all-lines (c-line a1-line a2-line r1-line r2-line time)
+             "Parses lines for all raw data streams"
+             (let* ((c (parse-line c-line))
+                    (a1 (parse-line a1-line))
+                    (a2 (parse-line a2-line))
+                    (r1 (parse-line r1-line))
+                    (r2 (parse-line r2-line)))
+               (make-spect-point time c a1 a2 r1 r2)))
 
-             (parse-next-entry (reached-end)
-               "Recursively reads lines from the raw data streams and parses them to create spectral points"
-               (multiple-value-bind
-                     (c a1 a2 r1 r2)
-                   (raw-data-read-line rd)
-                 (let* ((time (parse-time c))
-                        (sp (parse-all-lines c a1 a2 r1 r2 time)))
-                   (when cache-stream (lisp-binary:write-binary sp cache-stream))
-                   (unless (or (and start-time (< time start-time)) (and end-time (> time end-time)))
-                     (vector-push-extend sp data))
-                   (cond ((raw-data-eof-p rd) ;; We're done parsing so return 
-                          reached-end)
-                         (t ;; Keep going
-                          (parse-next-entry (> time end-time))))))))
+           (parse-next-entry (reached-end)
+             "Recursively reads lines from the raw data streams and parses them to create spectral points"
+             (multiple-value-bind
+                   (c a1 a2 r1 r2)
+                 (raw-data-read-line rd)
+               (let* ((time (parse-time c))
+                      (sp (parse-all-lines c a1 a2 r1 r2 time)))
+                 (when cache-stream (lisp-binary:write-binary sp cache-stream))
+                 (unless (or (and start-time (< time start-time)) (and end-time (> time end-time)))
+                   (station-push station sp))
+                 (cond ((raw-data-eof-p rd) ;; We're done parsing so return 
+                        reached-end)
+                       (t ;; Keep going
+                        (parse-next-entry (> time end-time))))))))
 
-      ;; Get the frequencies
-      (ppcre:do-register-groups ((#'read-from-string freq))
-          (*hist-stat-freq-scan*
-           (raw-data-read-line rd)      ; Returns first line of c data and throws away the other data files' lines
-           nil
-           :start 16)
-        (setq freqs (cons freq freqs)))
+    ;; Get the frequencies
+    (when (not (freqs-defined station))
+      (let ((freqs))
+        (ppcre:do-register-groups ((#'read-from-string freq))
+            (*hist-stat-freq-scan*
+             (raw-data-read-line rd)    ; Returns first line of c data and throws away the other data files' lines
+             nil
+             :start 16)
+          (setq freqs (cons freq freqs)))
+        
+        ;; Reverse them to put them in order      
+        (setf (freqs station) (apply #'vector (reverse freqs)))))
 
-      ;; Reverse them to put them in order      
-      (setq freqs (apply #'vector (reverse freqs)))
-
-      ;; Return parsed data
-      (parse-next-entry nil))))
-
-(defun cache-station-hist (station-id data)
-  "Saves data to the historical data cache for the station with station-id."
-  (let* ((start-time (spectral-point-ts (aref data 0)))
-         (cache-path (ensure-hist-path-exists station-id start-time)))
-    (write-cache data cache-path)))
+    ;; Return parsed data
+    (parse-next-entry nil)))
 
 ;; There are two (so far) url formats for monthly data - annoying, I know. Most of them seem to be the first format, but
 ;; (at least at the time of this writing) the latest month comes in the second format. The easiest thing to do is to just try
@@ -447,7 +534,7 @@ If the rtd cache for the given station does not exist, then the return value wil
       (nth-value 1 (get-month time))
       station-id))))
 
-(defun download-station-hist (data station-id start-time &optional end-time cache-data)
+(defun download-station-hist (station start-time &optional end-time cache-data)
   "Downloads the historical data \(if it exists\) in which the given start time is stored for the given station id. Only data
   points with times equal to or later than the start time will be returned and, if non-nil, only data points with times
   before end-time will be returned.
@@ -466,13 +553,13 @@ If the rtd cache for the given station does not exist, then the return value wil
               (format
                nil
                "https://www.ndbc.noaa.gov/view_text_file.php?filename=~D~C~D.txt.gz&dir=data/historical/~A/"
-               station-id
+               (id station)
                char-key
                (get-year start-time)
                path)))
            (get-month-data (path)
-             (or (try-get-url (funcall (car *hist-month-urls*) station-id path start-time))
-                 (try-get-url (funcall (cadr *hist-month-urls*) station-id path start-time))))
+             (or (try-get-url (funcall (car *hist-month-urls*) (id station) path start-time))
+                 (try-get-url (funcall (cadr *hist-month-urls*) (id station) path start-time))))
            (get-data (char-key path)
              (if (= (get-year start-time) (this-year))
                  (get-month-data path)
@@ -485,46 +572,45 @@ If the rtd cache for the given station does not exist, then the return value wil
 
       ;; Parse using cache file if we're caching, and without it if we're not
       (if cache-data 
-          (lisp-binary:with-open-binary-file (f (ensure-hist-path-exists station-id start-time) :direction :output)
-            (parse-hist data (apply #'raw-data-from-strings raw-data) start-time end-time f))
-          (parse-hist data (apply #'raw-data-from-strings raw-data) start-time end-time)))))
+          (lisp-binary:with-open-binary-file (f (ensure-hist-path-exists (id station) start-time) :direction :output)
+            (parse-hist station (apply #'raw-data-from-strings raw-data) start-time end-time f))
+          (parse-hist station (apply #'raw-data-from-strings raw-data) start-time end-time)))))
 
-(defun read-station-hist-cache (data station-id start-time &optional end-time)
+(defun read-station-hist-cache (station start-time &optional end-time)
   "Reads the historical data from the cache \(if it exists\) in which the given start time is stored for the given station
   id. Only data points with times equal to or later than the start time will be returned and, if non-nil, only data points
   with times before end-time will be returned."
-  (let ((cache-path (get-hist-cache-path-from-time station-id start-time)))
-    (read-cache data cache-path start-time end-time)))
+  (let ((cache-path (get-hist-cache-path-from-time (id station) start-time)))
+    (read-data-cache station cache-path start-time end-time)))
 
-(defun get-hist-data (station-id start-time end-time &optional cache-new-data)
+(defun get-hist-data (station start-time end-time &optional cache-new-data)
   "Returns all available historical data, preferably from the cache, if it's available there, between start-time and end-time
 for the given station id. If cache-new-data is non-nil, then any data not found in the cache, and retrieved from the web will
 be cached for later use."
-  (let ((data (make-array 100 :fill-pointer 0 :adjustable t)))
-    (labels ((get-data (start)
-               (format t
-                       "start: ~A~%"
-                       (local-time:format-timestring nil (local-time:universal-to-timestamp start)
-                                                     :format local-time:+asctime-format+))
-               (or (read-station-hist-cache data station-id start end-time)
-                   (download-station-hist data station-id start end-time cache-new-data))))
-      (do* ((end-reached (get-data start-time) (get-data next-start))
-            (next-start))
-           (end-reached data) ; We're done when get-data returns non-nil
+  (labels ((get-data (start)
+             (format t
+                     "start: ~A~%"
+                     (local-time:format-timestring nil (local-time:universal-to-timestamp start)
+                                                   :format local-time:+asctime-format+))
+             (or (read-station-hist-cache station start end-time)
+                 (download-station-hist station start end-time cache-new-data))))
+    (do* ((end-reached (get-data start-time) (get-data next-start))
+          (next-start))
+         (end-reached station) ; We're done when get-data returns non-nil
       
-        ;; Make sure that the next start time is at the beginning of the next hist file
-        ;; This will be the beginning of the next month in all cases
-        (let* ((last-end (spectral-point-ts (aref data (1- (length data))))))
-          (format
-           t
-           "last-end: ~A~%"
-           (local-time:format-timestring nil (local-time:universal-to-timestamp last-end)
-                                         :format local-time:+asctime-format+))
-          (setq next-start
-                (multiple-value-bind (s m h d mon yr) (decode-universal-time last-end)
-                  (let* ((mon (1+ mon))
-                         (yr (if (> mon 12) (1+ yr) yr)))
-                    (encode-universal-time 0 0 0 1 (1+ (mod (1- mon) 12)) yr)))))))))
+      ;; Make sure that the next start time is at the beginning of the next hist file
+      ;; This will be the beginning of the next month in all cases
+      (let* ((last-end (end station)))
+        (format
+         t
+         "last-end: ~A~%"
+         (local-time:format-timestring nil (local-time:universal-to-timestamp last-end)
+                                       :format local-time:+asctime-format+))
+        (setq next-start
+              (multiple-value-bind (s m h d mon yr) (decode-universal-time last-end)
+                (let* ((mon (1+ mon))
+                       (yr (if (> mon 12) (1+ yr) yr)))
+                  (encode-universal-time 0 0 0 1 (1+ (mod (1- mon) 12)) yr))))))))
 
 ;; General Data Retrieval API
 
