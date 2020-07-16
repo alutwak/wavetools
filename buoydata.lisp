@@ -61,18 +61,18 @@ is only really useful when multiple hits on the data are done within a few hours
 
 (defun get-year (time)
   "Returns the year of the given universal time"
-  (nth-value 5 (decode-universal-time time)))
+  (nth-value 5 (decode-universal-time time 0)))
 
 (defun get-month (time)
   "Returns the month of the given universal time"
-  (values (nth-value 4 (decode-universal-time time))
+  (values (nth-value 4 (decode-universal-time time 0))
           (local-time:format-timestring nil (local-time:universal-to-timestamp time) :format '(:short-month))))
 
 (defun get-hist-data-path-date (time)
   "Gets the historical data \"time\" path for a given universal time. This path is valid for both the cache and the NOAA urls,
 and it is either the year if time is from a previous year, or the month name if time is from this year."
   (multiple-value-bind (s m h d MM YY)
-      (decode-universal-time time)
+      (decode-universal-time time 0 )
     (if (= YY (this-year))
         (local-time:format-timestring nil (local-time:universal-to-timestamp time) :format '(:short-month))
         YY)))
@@ -284,7 +284,7 @@ before closing the files."
       ((#'parse-integer year month day hour min))
       (*date-scan*
        line)
-    (encode-universal-time 0 min hour day month year)))
+    (encode-universal-time 0 min hour day month year 0)))
 
 ;;; Data Caching
 
@@ -612,10 +612,10 @@ be cached for later use."
          (local-time:format-timestring nil (local-time:universal-to-timestamp last-end)
                                        :format local-time:+asctime-format+))
         (setq next-start
-              (multiple-value-bind (s m h d mon yr) (decode-universal-time last-end)
+              (multiple-value-bind (s m h d mon yr) (decode-universal-time last-end 0)
                 (let* ((mon (1+ mon))
                        (yr (if (> mon 12) (1+ yr) yr)))
-                  (encode-universal-time 0 0 0 1 (1+ (mod (1- mon) 12)) yr))))))))
+                  (encode-universal-time 0 0 0 1 (1+ (mod (1- mon) 12)) yr 0))))))))
 
 ;; Metadata retrieval and parsing
 
