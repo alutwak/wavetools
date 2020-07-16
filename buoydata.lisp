@@ -650,7 +650,8 @@ be cached for later use."
 
 (defun write-metadata-cache (metadata station-id &key (if-exists :error))
   (lisp-binary:with-open-binary-file (f (ensure-metadata-path-exists station-id) :direction :output :if-exists if-exists)
-    (lisp-binary:write-binary metadata f)))
+    (when f
+      (lisp-binary:write-binary metadata f))))
 
 (defun get-metadata (station-id)
   (or (read-metadata-cache station-id :if-does-not-exist nil)
