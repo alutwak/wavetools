@@ -20,7 +20,6 @@
 (defvar *station-cache* (concatenate 'string *buoy-cache* "~D/")
   "Path for caching data for a specific station. The ~D is the station ID.")
 
-
 (defun get-station-cache-path (station-id)
   (format nil *station-cache* station-id))
 
@@ -99,6 +98,9 @@ error. Other request errors are not handled yet."
   (handler-case
       (dex:get url)
     (dex:http-request-not-found () nil)))
+
+(defun deg-to-rad (deg)
+  (/ (* pi deg) 180.0))
 
 ;; ---------------------------------- Station ------------------------------------
 
@@ -315,6 +317,40 @@ before closing the files."
                           (read-data))))))
         (when f (read-data))))))
 
+;; CDIP Buoys
+
+(defvar *python-time-offset* (encode-universal-time 0 0 0 1 1 1970 0))
+
+(defun download-cdip-data (station start-time end-time &optional cache-new-data)
+  (let* ((args `("cdipbuoy.py"
+                 ,(write-to-string (id station))
+                 "-s" ,(write-to-string start-time)
+                 "-e" ,(write-to-string end-time)
+                 "-o" ,(write-to-string *python-time-offset*)
+                 ,(when (not (freqs-defined station)) "-f")))
+         (proc-var (sb-ext:run-program "python" args :search t :output :stream))
+         (output (process-output proc-var))) 
+      (labels ((read-data ()
+              (let* ((sp (lisp-binary:read-binary 'spectral-point output))
+                     (time (spectral-point-ts sp)))
+               
+                ;; Read until we reach end-time or the end of the file (at which point, ts will be 0)
+                (cond ((> time end-time)
+                       ;; We reached the end time
+                       'eot)
+                      ((= time 0.0)
+                       ;; We've reached the end of the file without hitting the end time
+                       'eof)
+                      ;; The cdipbuoy.py script won't write data before start-time, so we don't need to handle it
+                      (t
+                       ;; This is data we want to return. Append it and keep going
+                       (station-push station sp)
+                       (read-data))))))
+        (when (not (freqs-defined station))
+          (let ((freqs (lisp-binary:read-binary-type '(lisp-binary:counted-array 1 float) output)))
+            (setf (freqs station) freqs)))
+        (read-data))))
+
 ;;; Real Time Data
 
 (defun parse-rtd (station rd &optional start-time end-time cache-stream)
@@ -336,18 +372,18 @@ before closing the files."
                 If c-data? is non-nil, the fsep data and frequencies are captured"
                (let ((fsep (if c-data?
                                (ppcre:register-groups-bind ((#'read-from-string fsep))
-                                   (fsep-scan
-                                    line
-                                    :start 17)
-                                 fsep)
+                                                           (fsep-scan
+                                                            line
+                                                            :start 17)
+                                                           fsep)
                                nil))
                      (data (make-array (spoint-size station) :element-type 'float :initial-element 0.0))
                      (dref -1))
                  (ppcre:do-register-groups ((#'read-from-string stat))
-                     (stat-scan
-                      line
-                      nil
-                      :start (if c-data? 23 17))
+                   (stat-scan
+                    line
+                    nil
+                    :start (if c-data? 23 17))
                    (progn
                      (setf (aref data (incf dref)) (float stat))))
                  (list data fsep)))
@@ -355,8 +391,8 @@ before closing the files."
              (parse-all-lines (c-line a1-line a2-line r1-line r2-line time)
                "Parses lines for all raw data streams"
                (let* ((c-fsep (parse-line c-line t))
-                      (a1 (car (parse-line a1-line nil)))
-                      (a2 (car (parse-line a2-line nil)))
+                      (a1 (map 'vector #'deg-to-rad (car (parse-line a1-line nil))))
+                      (a2 (map 'vector #'deg-to-rad (car (parse-line a2-line nil))))
                       (r1 (car (parse-line r1-line nil)))
                       (r2 (car (parse-line r2-line nil))))
                  (make-spect-point time (car c-fsep) a1 a2 r1 r2 (cadr c-fsep))))
@@ -373,17 +409,17 @@ before closing the files."
 
       ;; Get the frequencies if we don't have them yet
       (when (not (freqs-defined station))
-          (raw-data-read-line rd) ;; Discard header      
-          (let ((freqs))
-            (ppcre:do-register-groups ((#'read-from-string freq))
-                (freq-scan
-                 (raw-data-read-line rd)
-                 nil
-                 :start 23)
-              (setq freqs (cons freq freqs)))
-            (setf (freqs station) (apply #'vector (reverse freqs))))
+        (raw-data-read-line rd) ;; Discard header      
+        (let ((freqs))
+          (ppcre:do-register-groups ((#'read-from-string freq))
+            (freq-scan
+             (raw-data-read-line rd)
+             nil
+             :start 23)
+            (setq freqs (cons freq freqs)))
+          (setf (freqs station) (apply #'vector (reverse freqs))))
 
-          (raw-data-reset rd))     ;; Reset the data
+        (raw-data-reset rd)) ;; Reset the data
 
       ;; Now, parse the data
       (raw-data-read-line rd) ;; Discard header
@@ -457,7 +493,7 @@ If the rtd cache for the given station does not exist, then the return value wil
   space-separated floating point values. The header for each file contains the set of frequencies, one for each row of data.
 
   Returns 'eot if end-time was reached and 'eof otherwise."
-  (labels ((parse-line (line)
+  (labels ((parse-line (line &optional (mult 1.0))
              "Parses a single line from one of the parameter files."
              (let ((data (make-array (spoint-size station) :element-type 'float :initial-element 0.0))
                    (dref -1))
@@ -466,16 +502,16 @@ If the rtd cache for the given station does not exist, then the return value wil
                     line
                     nil
                     :start 16)
-                 (setf (aref data (incf dref)) (float stat)))
+                 (setf (aref data (incf dref)) (* stat mult)))
                data))
            
            (parse-all-lines (c-line a1-line a2-line r1-line r2-line time)
              "Parses lines for all raw data streams"
              (let* ((c (parse-line c-line))
-                    (a1 (parse-line a1-line))
-                    (a2 (parse-line a2-line))
-                    (r1 (parse-line r1-line))
-                    (r2 (parse-line r2-line)))
+                    (a1 (map 'vector #'deg-to-rad (parse-line a1-line)))
+                    (a2 (map 'vector #'deg-to-rad (parse-line a2-line)))
+                    (r1 (parse-line r1-line 0.01))      ;; r1 and r2 values are scaled by 100 in historical data
+                    (r2 (parse-line r2-line 0.01)))     ;; We need to unscale them
                (make-spect-point time c a1 a2 r1 r2)))
 
            (parse-next-entry (reached-end)
@@ -631,13 +667,13 @@ be cached for later use."
              (water-depth))
         (dolist (line (str:lines metadata-str) (make-station-metadata :lat lat :lon lon :depth water-depth))
           (let* ((lat-lon? (ppcre:register-groups-bind
-                               ((#'read-from-string lat ltdir lon lndir)) 
-                               (loc-scan line)
-                             (cons (* lat (if (string= ltdir "S") -1 1)) (* lon (if (string= lndir "E") -1 1)))))
+                            ((#'read-from-string lat ltdir lon lndir)) 
+                            (loc-scan line)
+                            (cons (* lat (if (string= ltdir "S") -1 1)) (* lon (if (string= lndir "E") -1 1)))))
                  (w-d? (ppcre:register-groups-bind
-                           ((#'read-from-string depth))
-                           (depth-scan line)
-                         (float depth))))
+                        ((#'read-from-string depth))
+                        (depth-scan line)
+                        (float depth))))
             (when lat-lon?
               (setq lat (car lat-lon?) lon (cdr lat-lon?)))
             (when w-d? (setq water-depth w-d?)))))
