@@ -1,12 +1,37 @@
-(ql:quickload '(:array-operations :lisp-binary) :silent t)
+;;; (ql:quickload '(:dexador :plump :lquery :lparallel :uiop :str :cl-ppcre :bt-semaphore :array-operations :lisp-binary))
+
+(defpackage :wavetools/wavespectrum
+  (:use :cl)
+  (:nicknames :wavespect)
+  (:import-from :lisp-binary
+                :defbinary
+                :counted-array)
+  (:import-from :array-operations
+                :linspace
+                :generate)
+  (:export :spectral-point
+           :spectral-point-ts
+           :spectral-point-c
+           :spectral-point-a1
+           :spectral-point-a2
+           :spectral-point-r1
+           :spectral-point-r2
+           :spectral-point-fsep
+           :make-spect-point
+           
+           :spreading-function
+           :directional-spectrum
+           :spectrum))
+
+(in-package :wavetools/wavespectrum)
 
 ;;Defines the spectral data for a single reading from a buoy
 (lisp-binary:defbinary spectral-point ()
-  (ts 0 :type 32)      ; timestamp       
+  (ts 0 :type 32)                                    ; timestamp       
   ;;(f #() :type (lisp-binary:counted-array 1 float))      ; frequency
-  (c #() :type (lisp-binary:counted-array 1 float))      ; non-directional spectral density
-  (a1 #() :type (lisp-binary:counted-array 1 float))     ; mean wave direction
-  (a2 #() :type (lisp-binary:counted-array 1 float))     ; principal wave direction
+  (c #() :type (lisp-binary:counted-array 1 float))  ; non-directional spectral density
+  (a1 #() :type (lisp-binary:counted-array 1 float)) ; mean wave direction
+  (a2 #() :type (lisp-binary:counted-array 1 float)) ; principal wave direction
   (r1 #() :type (lisp-binary:counted-array 1 float))
   (r2 #() :type (lisp-binary:counted-array 1 float))
   (fsep 9.999 :type float)) ; separation frequency

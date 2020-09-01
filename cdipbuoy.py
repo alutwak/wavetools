@@ -11,6 +11,7 @@ class CDIPBuoy(object):
 
     def __init__(self, url):
         self._data = Dataset(url, "r")
+        self._c11 = None
         self._a0 = None
         self._r1 = None
         self._r2 = None
@@ -29,7 +30,12 @@ class CDIPBuoy(object):
 
     @property
     def c11(self):
-        return np.array(self._data.variables['waveEnergyDensity'])
+        if self._c11 is None:
+            # Need to remove the -999.99 fill values and just set the energy to zero
+            # This will then need to be dealt with in the r1 and r2 calculations
+            self._c11 = np.array(self._data.variables['waveEnergyDensity'])
+            self._c11[np.where(self._c11 < 0.0)] = 0.0
+        return self._c11
 
     @property
     def a1(self):
@@ -116,13 +122,13 @@ class CDIPBuoy(object):
     @property
     def r1(self):
         if self._r1 is None:
-            self._r1 = np.sqrt(self.a1**2 + self.b1**2)/self.a0
+            self._r1 = np.sqrt(self.a1**2 + self.b1**2)/(self.a0 + 1e-15)
         return self._r1
 
     @property
     def r2(self):
         if self._r2 is None:
-            self._r2 = np.sqrt(self.a2**2 + self.b2**2)/self.a0
+            self._r2 = np.sqrt(self.a2**2 + self.b2**2)/(self.a0 + 1e-15)
         return self._r2
 
     def Slinear(self, ti, fi, theta):
@@ -181,7 +187,10 @@ def writeBuoySpectralData(buoy, start_time=0, end_time=sys.maxsize, offset=0, st
             writeSpectralPoint(ts+offset, c11, alpha1, alpha2, r1, r2, stream)
 
 
-def writeBuoyFrequencies(buoy, stream=sys.stdout):
+def writeBuoyMetadata(buoy, stream=sys.stdout):
+    writeBinaryFloat32(buoy.lat)
+    writeBinaryFloat32(buoy.lon)
+    writeBinaryFloat32(buoy.depth)
     writeBinaryCountedArray(buoy.freqs)
 
 
@@ -191,8 +200,8 @@ if __name__ == "__main__":
     parser.add_argument('-s', '--start_time', type=int, default=0, help="The time at which to start reading data")
     parser.add_argument('-e', '--end_time', type=int, default=sys.maxsize, help="Time at which to stop reading data")
     parser.add_argument('-o', '--time_offset', type=int, default=0, help="Offset time")
-    parser.add_argument('-f', '--write_freqs', action='store_true', default=False,
-                        help="Causes the frequencies to be written")
+    parser.add_argument('-m', '--write_meta', action='store_true', default=False,
+                        help="Causes the metadata to be written")
     args = parser.parse_args()
 
     if args.station not in STATION_MAP:
@@ -200,6 +209,6 @@ if __name__ == "__main__":
 
     url = f'http://thredds.cdip.ucsd.edu/thredds/dodsC/cdip/realtime/{STATION_MAP[args.station]}p1_rt.nc'
     buoy = CDIPBuoy(url)
-    if args.write_freqs:
-        writeBuoyFrequencies(buoy)
+    if args.write_meta:
+        writeBuoyMetadata(buoy)
     writeBuoySpectralData(buoy, args.start_time, args.end_time, args.time_offset)
