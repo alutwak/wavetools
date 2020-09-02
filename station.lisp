@@ -10,11 +10,14 @@
            :data
            :end
            :source
+           :cdip
 
+           :station-metadata
            :make-station-metadata
            
            :freqs
            :freqs-defined
+           :metadata-defined
            :spoint-size
            :lat
            :lon
@@ -78,6 +81,9 @@
 (defgeneric freqs-defined (station)
   (:documentation "Returns freqs if they have been defined for the station and nil otherwise"))
 
+(defgeneric metadata-defined (station)
+  (:documentation "Returns metadata if it has been defined for the station and nil otherwise"))
+
 (defgeneric spoint-size (station)
   (:documentation "Returns the number of frequencies defined for each of this station's spectral points"))
 
@@ -115,6 +121,14 @@
   (let ((freqs (freqs station)))
     (when (> (length freqs) 0)
       freqs)))
+
+(defmethod metadata-defined ((station station))
+  (unless (or
+           (= (length (freqs station)) 0)
+           (= (lat station) 999.9)
+           (= (lon station) 999.9)
+           (= (depth station) 0.0))
+    (metadata station)))
 
 (defmethod spoint-size ((station station))
   (length (freqs station)))

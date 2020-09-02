@@ -13,7 +13,8 @@
                 :$
                 :initialize)
   (:export :download-station-data
-           :download-station-metadata))
+           :download-station-metadata
+           :download-station-rtd))
 
 (in-package :wavetools/station-download)
 
@@ -175,6 +176,7 @@ before closing the files."
   Returns 'eot if end-time was reached and 'eof otherwise."
   (labels ((parse-line (line &optional (mult 1.0))
              "Parses a single line from one of the parameter files."
+             ;(format t "~A~%" line)
              (let ((data (make-array (spoint-size station) :element-type 'float :initial-element 0.0))
                    (dref -1))
                (ppcre:do-register-groups ((#'read-from-string stat))
@@ -304,16 +306,22 @@ before closing the files."
                               yr)))
                  (encode-universal-time 0 0 0 1 mon yr 0))))
            (download-all (next-start)
+             (multiple-value-bind (s m h d mon yr) (decode-universal-time next-start 0)
+               (format t "~D-~D-~D ~D:~D~%"
+                         mon d yr h m))
              (let ((end-reached (download-station-hist-next-chunk station next-start end-time cache-writer)))
                (cond ((equal end-reached 'eot)
                       ;; We've reached end-time
+                      (format t "All requested data found ~%")
                       'eot)
                      ((and (not end-reached) (= (get-year next-start) (this-year)))
                       ;; No data were found and we're in this year, so there's no newer data to be found
+                      (format t "All requested data not found ~%")
                       'eof)
                      (t
                       ;; Either data were found, or they weren't but there may be later data. Either way, keep searching
                       (download-all (calculate-next-start next-start)))))))
+    (format t "Searching for historical data for station ~D~%" (id station))
     (download-all start-time)))
 
 ;;; ======================================== Real Time Data ========================================================
@@ -417,6 +425,7 @@ before closing the files."
   Returns 'eot value if end-time was reached, 'eof if it wasn't, and nil if the data were not reachable on the server."
   (flet ((get-data (path)
            (dex:get (format nil "https://www.ndbc.noaa.gov/data/realtime2/~D.~A" (id station) path))))
+    (format t "Downlading real-time-data for station ~D~%" (id station))
     (handler-case
         (let ((raw-data (mapcar #'get-data '("data_spec" "swdir" "swdir2" "swr1" "swr2"))))
 
@@ -456,7 +465,8 @@ before closing the files."
                        (station-push station sp)
                        (when cache-writer (funcall cache-writer sp))
                        (read-data))))))
-        (when (not (freqs-defined station))
+        (format t "Downloading CDIP data for station ~D~%" (id station))
+        (when (not (metadata-defined station))
           ;; Metadata will lead the data
           (let ((metadata (lisp-binary:read-binary 'station-metadata output)))
             (setf (metadata station) metadata)))
@@ -470,11 +480,15 @@ before closing the files."
    only data points before that time will be appended. If cache-writer is non-nil, then it must be a function and it will 
    be called with each spectral point downloaded.
 
+   Only historical (or cdip) data will be downloaded. Real-time data may be reported with a different set of frequencies,
+   making it difficult to mix historical and real-time data. I don't want to deal with this right now, so for now, I'm
+   keeping it separate. If you want data that's more recent than the latest historical data, you'll need to download it
+   into a separate station object.
+
    Returns 'eot value if end-time was reached, 'eof if it wasn't, and nil if no data were found."
   (if (equal (source station) 'cdip)
-      (download-station-cdip start-time end-time cache-writer)
-      (unless (equal 'eot (download-station-hist start-time end-time cache-writer))
-        (download-station-rtd start-time end-time cache-writer))))
+      (download-station-cdip station start-time end-time cache-writer)
+      (download-station-hist station start-time end-time cache-writer)))
 
 (defun download-station-metadata (station)
   (setf (metadata station)
