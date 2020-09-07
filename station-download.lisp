@@ -1,5 +1,5 @@
 (defpackage :wavetools/station-download
-  (:use :cl :sb-ext :wavetools/wavespectrum :wavetools/station)
+  (:use :cl :sb-ext :wavetools/wavespectrum :wavetools/station :wavetools/station-cache)
   (:import-from :lisp-binary
                 :write-binary
                 :with-open-binary-file)
@@ -40,8 +40,10 @@ error. Other request errors are not handled yet."
       (dex:get url)
     (dex:http-request-not-found () nil)))
 
+(defvar *pi-single* (coerce pi 'single-float))
+
 (defun deg-to-rad (deg)
-  (/ (* pi deg) 180.0))
+  (/ (* *pi-single* deg) 180.0))
 
 ;; ========================================= Raw Data Retrieval and Handling ===========================================
 
@@ -63,15 +65,6 @@ parameter is stored in a stream."
    (make-string-input-stream r1-data)
    (make-string-input-stream r2-data)))
 
-(defun raw-data-from-paths (c-path a1-path a2-path r1-path r2-path)
-  "Creates a raw-data object from a set of parameter file paths, which is how they will be retrieved from the cache."
-  (make-raw-data
-   (open c-path)
-   (open a1-path)
-   (open a2-path)
-   (open r1-path)
-   (open r2-path)))
-
 (defun raw-data->list (rd)
   "Returns the raw-data parameters as a list to make mapping with them easier"
   (list (raw-data-c rd) (raw-data-a1 rd) (raw-data-a2 rd) (raw-data-r1 rd) (raw-data-r2 rd)))
@@ -85,7 +78,7 @@ parameter is stored in a stream."
 before closing the files."
   `(handler-case
        (let ((,rd (raw-data-from-paths ,c-path ,a1-path ,a2-path ,r1-path ,r2-path)))
-         (prog1
+         (unwind-protect
              (progn ,@body)
            (raw-data-close ,rd)))
     (file-does-not-exist () nil)))
@@ -409,7 +402,6 @@ before closing the files."
                     (cond ((and start-time (< time start-time))
                            'eof)
                           ((and end-time (> time end-time))
-                           (break)
                            'eot)
                           (t
                            (station-push station sp)
@@ -474,11 +466,10 @@ before closing the files."
 
 ;;; ========================================== Station Download API ======================================================
 
-(defun download-station-data (station start-time end-time &optional cache-writer)
+(defun download-station-data (station start-time end-time &optional write-cache)
   "Downloads the data for the given station, which must already have an id, and appends it to the station's data. If
    start-time is non-nil, then only data points after that \(universal\) time will be appended. If end-time is non-nil then
-   only data points before that time will be appended. If cache-writer is non-nil, then it must be a function and it will 
-   be called with each spectral point downloaded.
+   only data points before that time will be appended. If write-cache is non-nil, then data will be written to the cache.
 
    Only historical (or cdip) data will be downloaded. Real-time data may be reported with a different set of frequencies,
    making it difficult to mix historical and real-time data. I don't want to deal with this right now, so for now, I'm
@@ -486,9 +477,16 @@ before closing the files."
    into a separate station object.
 
    Returns 'eot value if end-time was reached, 'eof if it wasn't, and nil if no data were found."
-  (if (equal (source station) 'cdip)
-      (download-station-cdip station start-time end-time cache-writer)
-      (download-station-hist station start-time end-time cache-writer)))
+  (flet ((do-download (&optional cache-writer)
+           (if (equal (source station) 'cdip)
+               (download-station-cdip station start-time end-time cache-writer)
+               (download-station-hist station start-time end-time cache-writer))))
+    (if write-cache
+        (progn
+          (with-cache-writer (cache-writer (id station))
+            (do-download 'cache-writer))
+          (write-station station))
+        (do-download))))
 
 (defun download-station-metadata (station)
   (setf (metadata station)
