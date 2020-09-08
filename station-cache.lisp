@@ -6,17 +6,17 @@
            :with-cache-writer
            :read-cache))
 
-
 (in-package :wavetools/station-cache)
 
+;;;================= ====================== Cache Paths ==============================================
 
-(defvar *station-cache* (uiop:native-namestring "~/wavestation/")
+(defvar *station-cache* (uiop:native-namestring "~/.wavestation/")
   "Base path for the station data cache")
 
-(defvar *hist-cache* (concatenate 'string "hist.sqlite")
+(defvar *hist-cache* (concatenate 'string *station-cache* "hist.sqlite")
   "Path for the station historical data cache")
 
-(defvar *rtd-cache* (concatenate 'string "rtd.sqlite")
+(defvar *rtd-cache* (concatenate 'string *station-cache* "rtd.sqlite")
   "Path for the station real-time data cache")
 
 (defun ensure-station-cache-exists ()
