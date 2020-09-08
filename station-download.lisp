@@ -205,7 +205,7 @@ before closing the files."
                        (t ;; Keep going
                         (parse-next-entry end-status)))))))
 
-    
+    (format t "Parsing data~%")
     (if (not (freqs-defined station))
         
         ;; Get the frequencies when we don't have them
@@ -286,7 +286,7 @@ before closing the files."
           (parse-hist station (apply #'raw-data-from-strings raw-data) start-time end-time cache-writer))
 
       ;; If the data don't exist for this time, return nil
-      (dex:http-request-not-found () nil))))
+      (dex:http-request-not-found () (format t "Historical data not found for this date~%")))))
 
 (defun download-station-hist (station start-time end-time &optional cache-writer)
   (labels ((calculate-next-start (last-start)
@@ -300,7 +300,7 @@ before closing the files."
                  (encode-universal-time 0 0 0 1 mon yr 0))))
            (download-all (next-start)
              (multiple-value-bind (s m h d mon yr) (decode-universal-time next-start 0)
-               (format t "~D-~D-~D ~D:~D~%"
+               (format t "Downloading data for time: ~D-~D-~D ~D:~D~%"
                          mon d yr h m))
              (let ((end-reached (download-station-hist-next-chunk station next-start end-time cache-writer)))
                (cond ((equal end-reached 'eot)
@@ -484,7 +484,7 @@ before closing the files."
     (if write-cache
         (progn
           (with-cache-writer (cache-writer (id station))
-            (do-download 'cache-writer))
+            (do-download #'cache-writer))
           (write-station station))
         (do-download))))
 

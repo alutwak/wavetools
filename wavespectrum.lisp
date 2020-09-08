@@ -28,7 +28,6 @@
 ;;Defines the spectral data for a single reading from a buoy
 (lisp-binary:defbinary spectral-point ()
   (ts 0 :type 32)                                    ; timestamp       
-  ;;(f #() :type (lisp-binary:counted-array 1 float))      ; frequency
   (c #() :type (lisp-binary:counted-array 1 float))  ; non-directional spectral density
   (a1 #() :type (lisp-binary:counted-array 1 float)) ; mean wave direction
   (a2 #() :type (lisp-binary:counted-array 1 float)) ; principal wave direction

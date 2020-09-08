@@ -67,6 +67,15 @@
 (defgeneric from-table (row)
   (:documentation "Creates a normal object from a table object"))
 
+(defun safe-insert (row)
+  (handler-case
+      (mito:save-dao row)
+    (dbi.error:dbi-database-error (condition)
+      (with-slots ((message dbi.error::message) (code dbi.error::error-code)) condition
+        (cond ((and (eq code :constraint) (string= "UNIQUE" (subseq message 0 6))) nil) ;; (format t "~A~%" message)
+              (t (format t "Unhandled database error: ~A -- ~A~%" code (type-of code))
+                 (error condition)))))))
+
 ;;; ======================================= Station table ===================================================
 
 (defclass station-table ()
@@ -101,7 +110,7 @@
 (defun insert-station (station)
   "Inserts a station object into a station-table row. TODO: Update the start-time and end-time values"
   (let ((row (to-table station)))
-    (mito:save-dao row)))
+    (safe-insert row)))
 
 (defun extract-station (station-id)
   (let ((row (car (mito:retrieve-dao 'station-table :id station-id))))
@@ -149,7 +158,7 @@
                          :fsep (spectral-point-fsep sp)))
 
 (defmethod from-table ((spt spectral-point-table))
-  (make-spectral-point
+  (make-spect-point
    (ts spt)
    (blob-to-float (c spt))
    (blob-to-float (a1 spt))
@@ -159,8 +168,8 @@
    (fsep spt)))
 
 (defun insert-spectral-point (sp station-id)
-  (let ((row (to-table sp :id station-id)))
-    (mito:save-dao row)))
+  (let ((row (to-table sp :station-id station-id)))
+    (safe-insert row)))
 
 (defun insert-data (station)
   (let ((id (id station)))
@@ -173,7 +182,8 @@
           (mito:select-dao 'wavetools/station-cache::spectral-point-table
             (sxql:where `(:and (:>= :ts ,start-time) (:<= :ts ,end-time) (:= :station-id ,(id station))))
             (sxql:order-by :ts))))
-    (map 'vector #'from-table data)))
+    (setf (data station) (map 'vector #'from-table data))
+    station))
 
 ;;; ================================= Cache API =============================================================
 
@@ -193,13 +203,10 @@
               (insert-spectral-point sp ,station-id)))
        ,@body)))
 
-(defun write-cache (station-id sp &optional to-rtd)
-  "Writes the given spectral point, sp, to the database for the station with the given id. If to-rtd is non-nil, the spectral
-  point is stored as real-time data"
-  )
-
-(defun read-cache (station start-time end-time &optional from-rtd)
+(defun read-cache (station-id start-time end-time &optional from-rtd)
   "Reads all cached data between start-time and end-time into the given station. If from-rtd is non-nil, the data is read
   from the real-time data cache"
-  )
+  (with-db-connection (from-rtd)
+    (let ((station (extract-station station-id)))
+      (extract-data station start-time end-time))))
 
