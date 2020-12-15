@@ -1,29 +1,29 @@
 ;;; (ql:quickload '(:dexador :plump :lquery :lparallel :uiop :str :cl-ppcre :bt-semaphore :array-operations :lisp-binary))
 
-(defpackage :wavetools/wavespectrum
-  (:use :cl)
-  (:nicknames :wavespect)
-  (:import-from :lisp-binary
-                :defbinary
-                :counted-array)
-  (:import-from :array-operations
-                :linspace
-                :generate)
-  (:export :spectral-point
-           :spectral-point-ts
-           :spectral-point-c
-           :spectral-point-a1
-           :spectral-point-a2
-           :spectral-point-r1
-           :spectral-point-r2
-           :spectral-point-fsep
-           :make-spect-point
+;; (defpackage :wavetools/wavespectrum
+;;   (:use :cl)
+;;   (:nicknames :wavespect)
+;;   (:import-from :lisp-binary
+;;                 :defbinary
+;;                 :counted-array)
+;;   (:import-from :array-operations
+;;                 :linspace
+;;                 :generate)
+;;   (:export :spectral-point
+;;            :spectral-point-ts
+;;            :spectral-point-c
+;;            :spectral-point-a1
+;;            :spectral-point-a2
+;;            :spectral-point-r1
+;;            :spectral-point-r2
+;;            :spectral-point-fsep
+;;            :make-spect-point
            
-           :spreading-function
-           :directional-spectrum
-           :spectrum))
+;;            :spreading-function
+;;            :directional-spectrum
+;;            :spectrum))
 
-(in-package :wavetools/wavespectrum)
+(in-package :wavetools)
 
 ;;Defines the spectral data for a single reading from a buoy
 (lisp-binary:defbinary spectral-point ()

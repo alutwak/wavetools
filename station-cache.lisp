@@ -1,12 +1,12 @@
-(defpackage :wavetools/station-cache
-  (:use :cl :wavetools/station :wavetools/wavespectrum)
-  (:import-from :mito
-                :deftable)
-  (:export :write-station
-           :with-cache-writer
-           :read-cache))
+;; (defpackage :wavetools/station-cache
+;;   (:use :cl :wavetools/station :wavetools/wavespectrum)
+;;   (:import-from :mito
+;;                 :deftable)
+;;   (:export :write-station
+;;            :with-cache-writer
+;;            :read-cache))
 
-(in-package :wavetools/station-cache)
+(in-package :wavetools)
 
 ;;;================= ====================== Cache Paths ==============================================
 
@@ -179,7 +179,7 @@
 
 (defun extract-data (station start-time end-time)
   (let ((data
-          (mito:select-dao 'wavetools/station-cache::spectral-point-table
+          (mito:select-dao 'wavetools::spectral-point-table
             (sxql:where `(:and (:>= :ts ,start-time) (:<= :ts ,end-time) (:= :station-id ,(id station))))
             (sxql:order-by :ts))))
     (setf (data station) (map 'vector #'from-table data))

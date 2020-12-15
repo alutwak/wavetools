@@ -1,22 +1,22 @@
-(defpackage :wavetools/station-download
-  (:use :cl :sb-ext :wavetools/wavespectrum :wavetools/station :wavetools/station-cache)
-  (:import-from :lisp-binary
-                :write-binary
-                :with-open-binary-file)
-  (:import-from :cl-ppcre
-                :do-register-groups
-                :create-scanner
-                :register-groups-bind)
-  (:import-from :dexador
-                :http-request-not-found)
-  (:import-from :lquery
-                :$
-                :initialize)
-  (:export :download-station-data
-           :download-station-metadata
-           :download-station-rtd))
+;; (defpackage :wavetools/station-download
+;;   (:use :cl :sb-ext :wavetools/wavespectrum :wavetools/station :wavetools/station-cache)
+;;   (:import-from :lisp-binary
+;;                 :write-binary
+;;                 :with-open-binary-file)
+;;   (:import-from :cl-ppcre
+;;                 :do-register-groups
+;;                 :create-scanner
+;;                 :register-groups-bind)
+;;   (:import-from :dexador
+;;                 :http-request-not-found)
+;;   (:import-from :lquery
+;;                 :$
+;;                 :initialize)
+;;   (:export :download-station-data
+;;            :download-station-metadata
+;;            :download-station-rtd))
 
-(in-package :wavetools/station-download)
+(in-package :wavetools)
 
 ;;; ------------------------ Utility Functions --------------------------------------------
 
@@ -149,8 +149,8 @@ before closing the files."
    history of the station just to get the metadata. download-station-cdip will automatically download the metadata, so you
    don't need to call this function unless you just want to get the metadata and no other data."
   (let* ((args (format nil "cdipbuoy.py ~D -s 1 -e 0 -m" station-id)) ; Start ends 
-         (proc-var (run-program "python" args :search t :output :stream :wait nil))
-         (output (process-output proc-var)))
+         (proc-var (sb-ext:run-program "python" args :search t :output :stream :wait nil))
+         (output (sb-ext:process-output proc-var)))
     (lisp-binary:read-binary 'station-metadata output)))
 
 ;;; ========================================= Historical Data ==========================================
@@ -291,17 +291,19 @@ before closing the files."
 (defun download-station-hist (station start-time end-time &optional cache-writer)
   (labels ((calculate-next-start (last-start)
              (multiple-value-bind (s m h d mon yr) (decode-universal-time last-start 0)
+               (declare (ignore s m h d))
                (let* ((mon (if (= yr (this-year))
-                               (1+ (mod mon 12))  ;; This year, we only increment by months
-                               1))                ;; Previous years, we increment by years
+                               (1+ (mod mon 12)) ;; This year, we only increment by months
+                               1))               ;; Previous years, we increment by years
                       (yr (if (= mon 1)
                               (1+ yr)
                               yr)))
                  (encode-universal-time 0 0 0 1 mon yr 0))))
            (download-all (next-start)
              (multiple-value-bind (s m h d mon yr) (decode-universal-time next-start 0)
+               (declare (ignore s))
                (format t "Downloading data for time: ~D-~D-~D ~D:~D~%"
-                         mon d yr h m))
+                       mon d yr h m))
              (let ((end-reached (download-station-hist-next-chunk station next-start end-time cache-writer)))
                (cond ((equal end-reached 'eot)
                       ;; We've reached end-time
@@ -393,6 +395,7 @@ before closing the files."
       ;; RT data comes in reverse time order, so we need to cons each line and then map back over to put it in order
       (let ((parsed (parse-next-entry '())))
         (reduce (lambda (reached-end sp)
+                  (declare (ignore reached-end))
                   
                   ;; Write everything to the cache when it's there
                   (when cache-writer (funcall cache-writer sp 'rtd))
@@ -437,8 +440,8 @@ before closing the files."
                          "-o" ,(write-to-string *python-time-offset*))
                        (if (not (freqs-defined station)) '("-m") '())))
          (proc-var (progn (format t "~A~%" args)
-                     (run-program "python" args :search t :output :stream :wait nil)))
-         (output (process-output proc-var)))
+                     (sb-ext:run-program "python" args :search t :output :stream :wait nil)))
+         (output (sb-ext:process-output proc-var)))
       (labels ((read-data ()
               (let* ((sp (lisp-binary:read-binary 'spectral-point output))
                      (time (spectral-point-ts sp)))

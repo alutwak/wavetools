@@ -1,33 +1,33 @@
-(defpackage :wavetools/station
-  (:use :cl :wavetools/wavespectrum)
-  (:nicknames :station)
-  (:import-from :lisp-binary
-                :defbinary
-                :counted-array)
-  (:export :station
-           :id
-           :metadata
-           :data
-           :end
-           :source
-           :cdip
+;; (defpackage :wavetools/station
+;;   (:use :cl :wavetools/wavespectrum)
+;;   (:nicknames :station)
+;;   (:import-from :lisp-binary
+;;                 :defbinary
+;;                 :counted-array)
+;;   (:export :station
+;;            :id
+;;            :metadata
+;;            :data
+;;            :end
+;;            :source
+;;            :cdip
 
-           :station-metadata
-           :make-station-metadata
+;;            :station-metadata
+;;            :make-station-metadata
            
-           :freqs
-           :freqs-defined
-           :metadata-defined
-           :spoint-size
-           :lat
-           :lon
-           :depth
-           :get-spectrum
-           :station-push
-           :begin
-           :clear-data))
+;;            :freqs
+;;            :freqs-defined
+;;            :metadata-defined
+;;            :spoint-size
+;;            :lat
+;;            :lon
+;;            :depth
+;;            :get-spectrum
+;;            :station-push
+;;            :begin
+;;            :clear-data))
 
-(in-package :wavetools/station)
+(in-package :wavetools)
 
 (defvar *cdip-stations* '(46267))
 
