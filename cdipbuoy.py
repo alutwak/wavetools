@@ -4,7 +4,7 @@ import numpy as np
 from netCDF4 import Dataset
 from argparse import ArgumentParser
 
-STATION_MAP = {46267: 248}
+STATION_MAP = {"46267": 248}
 
 
 class CDIPBuoy(object):
@@ -196,7 +196,7 @@ def writeBuoyMetadata(buoy, stream=sys.stdout):
 
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument('station', type=int, help="The station ID")
+    parser.add_argument('station', type=str, help="The station ID")
     parser.add_argument('-s', '--start_time', type=int, default=0, help="The time at which to start reading data")
     parser.add_argument('-e', '--end_time', type=int, default=sys.maxsize, help="Time at which to stop reading data")
     parser.add_argument('-o', '--time_offset', type=int, default=0, help="Offset time")

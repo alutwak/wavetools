@@ -36,7 +36,7 @@
   (fsep 9.999 :type float)) ; separation frequency
 
 (defun make-spect-point (ts c a1 a2 r1 r2 &optional (fsep 9.999))
-  (make-spectral-point :ts ts ::c c :a1 a1 :a2 a2 :r1 r1 :r2 r2 :fsep fsep))
+  (make-spectral-point :ts ts :c c :a1 a1 :a2 a2 :r1 r1 :r2 r2 :fsep fsep))
 
 (defun spreading-function (theta a1 a2 r1 r2)
   (let ((alpha (- (* 1.5 pi) theta)))

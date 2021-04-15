@@ -124,7 +124,7 @@ before closing the files."
   (handler-case
       (let* ((loc-scan (ppcre:create-scanner "\\s+([0-9.]+) (N|S) ([0-9.]+) (E|W)"))
              (depth-scan (ppcre:create-scanner "\\s+Water depth: ([0-9.]+) m"))
-             (request (dex:get (format nil "https://www.ndbc.noaa.gov/station_page.php?station=~D&uom=E&tz=STN" station-id)))
+             (request (dex:get (format nil "https://www.ndbc.noaa.gov/station_page.php?station=~A&uom=E&tz=STN" station-id)))
              (parsed-req (lquery:$ (lquery:initialize request)))
              (metadata-str (aref (lquery:$ parsed-req "#stn_metadata p" (text)) 0)) ; This comes as an annoying paragraph
              (lat)
@@ -148,7 +148,7 @@ before closing the files."
   "Downloads the metadata for a cdip station. This function is very inefficient because it downloads the data for the entire
    history of the station just to get the metadata. download-station-cdip will automatically download the metadata, so you
    don't need to call this function unless you just want to get the metadata and no other data."
-  (let* ((args (format nil "cdipbuoy.py ~D -s 1 -e 0 -m" station-id)) ; Start ends 
+  (let* ((args (format nil "cdipbuoy.py ~A -s 1 -e 0 -m" station-id)) ; Start ends 
          (proc-var (sb-ext:run-program "python" args :search t :output :stream :wait nil))
          (output (sb-ext:process-output proc-var)))
     (lisp-binary:read-binary 'station-metadata output)))
@@ -235,7 +235,7 @@ before closing the files."
      (multiple-value-bind (m-num m-str) (get-month time)
        (format
         nil
-        "https://www.ndbc.noaa.gov/view_text_file.php?filename=~D~D~D.txt.gz&dir=data/~A/~A/"
+        "https://www.ndbc.noaa.gov/view_text_file.php?filename=~A~D~D.txt.gz&dir=data/~A/~A/"
         station-id
         m-num
         (get-year time)
@@ -244,7 +244,7 @@ before closing the files."
    (lambda (station-id path time)
      (format
       nil
-      "https://www.ndbc.noaa.gov/data/~A/~A/~D.txt"
+      "https://www.ndbc.noaa.gov/data/~A/~A/~A.txt"
       path
       (nth-value 1 (get-month time))
       station-id))))
@@ -434,13 +434,13 @@ before closing the files."
 
 (defun download-station-cdip (station start-time end-time &optional cache-writer)
   (let* ((args (append `("cdipbuoy.py"
-                         ,(write-to-string (id station))
+                         ,(id station)
                          "-s" ,(write-to-string start-time)
                          "-e" ,(write-to-string end-time)
                          "-o" ,(write-to-string *python-time-offset*))
                        (if (not (freqs-defined station)) '("-m") '())))
          (proc-var (progn (format t "~A~%" args)
-                     (sb-ext:run-program "python" args :search t :output :stream :wait nil)))
+                          (sb-ext:run-program "python3" args :search t :output :stream :wait nil)))
          (output (sb-ext:process-output proc-var)))
       (labels ((read-data ()
               (let* ((sp (lisp-binary:read-binary 'spectral-point output))

@@ -10,7 +10,7 @@
 
 ;;;================= ====================== Cache Paths ==============================================
 
-(defvar *station-cache* (uiop:native-namestring "~/.wavestation/")
+(defvar *station-cache* (uiop:native-namestring "~/.cache/wavestation/")
   "Base path for the station data cache")
 
 (defvar *hist-cache* (concatenate 'string *station-cache* "hist.sqlite")
@@ -81,7 +81,8 @@
 ;;; ======================================= Station table ===================================================
 
 (defclass station-table ()
-  ((id :col-type :integer :primary-key t
+  ((id :col-type (:varchar 10)
+       :primary-key t
        :accessor id)
    (lat :col-type :real
         :accessor lat)
@@ -122,12 +123,13 @@
 
 
 (defclass spectral-point-table ()
-  ((station-id :col-type :integer
-    :accessor station-id)
+  ((station-id :col-type (:varchar 10)
+               :accessor station-id)
    (ts :col-type :integer
        :accessor ts)
-   (id :col-type :integer :primary-key t
-           :reader id)
+   ;; (id :col-type :integer
+   ;;     :primary-key t
+   ;;     :reader id)
    (c :col-type :blob
       :accessor c)
    (a1 :col-type :blob
@@ -146,10 +148,9 @@
        :accessor tp)
    (dp :col-type (or :real :null)
        :accessor dp))
-  (:metaclass mito:dao-table-class))
+  (:metaclass mito:dao-table-class)
+  (:primary-key station-id ts))
 
-(defmethod initialize-instance :after ((spt spectral-point-table) &key)
-  (setf (slot-value spt 'id) (logior (ash (station-id spt) 33) (ts spt))))
 
 (defmethod to-table ((sp spectral-point) &key (station-id 0))
   (make-instance
@@ -179,13 +180,12 @@
                (insert-spectral-point sp id))
          (data station))))
 
-(defun extract-data (station start-time end-time)
+(defun extract-data (station-id start-time end-time)
   (let ((data
           (mito:select-dao 'wavetools::spectral-point-table
-            (sxql:where `(:and (:>= :ts ,start-time) (:<= :ts ,end-time) (:= :station-id ,(id station))))
+            (sxql:where `(:and (:>= :ts ,start-time) (:<= :ts ,end-time) (:= :station-id ,station-id)))
             (sxql:order-by :ts))))
-    (setf (data station) (map 'vector #'from-table data))
-    station))
+    (map 'vector #'from-table data)))
 
 ;;; ================================= Cache API =============================================================
 
@@ -211,6 +211,8 @@
   "Reads all cached data between start-time and end-time into the given station. If from-rtd is non-nil, the data is read
   from the real-time data cache"
   (with-db-connection (from-rtd)
-    (let ((station (extract-station station-id)))
-      (extract-data station start-time end-time))))
+    (let ((station (extract-station station-id))
+          (data (extract-data station-id start-time end-time)))
+      (setf (data station) data)
+      station)))
 

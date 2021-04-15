@@ -29,7 +29,7 @@
 
 (in-package :wavetools)
 
-(defvar *cdip-stations* '(46267))
+(defvar *cdip-stations* '("46267"))
 
 (defun init-data-vect ()
   (make-array 100 :fill-pointer 0 :adjustable t))
@@ -48,7 +48,7 @@
   ((id
     :initarg :id
     :accessor id
-    :type integer
+    :type string
     :documentation "The id value for the station")
    (metadata
     :initarg :metadata
@@ -109,7 +109,7 @@
   (:documentation "Clears the station's data"))
 
 (defmethod initialize-instance :after ((st station) &key (lat 999.9) (lon 999.9) (depth 0.0) (freqs #()))
-  (setf (slot-value st 'source) (if (member (id st) *cdip-stations*) 'cdip 'noaa))
+  (setf (slot-value st 'source) (if (member (id st) *cdip-stations* :test 'string=) 'cdip 'noaa))
   (setf (metadata st) (make-station-metadata :lat lat :lon lon :depth depth :freqs freqs)))
 
 (defmethod freqs ((station station))
