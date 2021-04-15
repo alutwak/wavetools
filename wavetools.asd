@@ -11,6 +11,7 @@ Blah blah blah...."
   :depends-on (#:str
                #:lisp-binary
                #:array-operations
+               #:sqlite
                #:mito
                #:cl-ppcre
                #:dexador

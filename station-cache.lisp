@@ -51,13 +51,12 @@
                         collect (cffi:mem-aref array :float i))))))
 
 (defmacro with-db-connection ((to-rtd) &body body)
-  (let ((connection (gensym)))
-   `(let ((,connection (dbi:connect :sqlite3 :database-name (if ,to-rtd *rtd-cache* *hist-cache*))))
-      (unwind-protect
-           (progn
-             ,@body)
-        ;; Ensure that the connection is closed.
-        (dbi:disconnect ,connection)))))
+  `(let ((mito:*connection* (dbi:connect :sqlite3 :database-name (if ,to-rtd *rtd-cache* *hist-cache*))))
+     (unwind-protect
+          (progn
+            ,@body)
+       ;; Ensure that the connection is closed.
+       (dbi:disconnect mito:*connection*))))
 
 ;;; ======================================== Generic database functions ======================================
 
@@ -70,9 +69,12 @@
 (defun safe-insert (row)
   (handler-case
       (mito:save-dao row)
-    (dbi.error:dbi-database-error (condition)
-      (with-slots ((message dbi.error::message) (code dbi.error::error-code)) condition
-        (cond ((and (eq code :constraint) (string= "UNIQUE" (subseq message 0 6))) nil) ;; (format t "~A~%" message)
+    (sqlite:sqlite-constraint-error (condition)
+      (with-slots ((error-msg sqlite::error-msg) (error-code sqlite::error-code)) condition
+        (cond ((and
+                (eq error-code :constraint)
+                (string= "UNIQUE" (subseq error-msg 0 6)))
+               nil) ;; (format t "~A~%" message)
               (t (format t "Unhandled database error: ~A -- ~A~%" code (type-of code))
                  (error condition)))))))
 
@@ -199,6 +201,8 @@
    the rtd cache if to-rtd is non-nil."
   (ensure-station-cache-exists)
   `(with-db-connection (,to-rtd)
+     (mito:ensure-table-exists 'station-table)
+     (mito:ensure-table-exists 'spectral-point-table)
      (flet ((,cache-writer (sp)
               (insert-spectral-point sp ,station-id)))
        ,@body)))
