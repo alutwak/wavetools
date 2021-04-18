@@ -106,9 +106,14 @@
                   :freqs (float-to-blob (freqs station)) :source (source station)))
 
 (defmethod from-table ((st station-table))
-  (make-instance
-   'station :id (id st) :lat (lat st) :lon (lon st) :depth (depth st)
-   :freqs (blob-to-float (freqs st))))
+  (let ((metadata
+          (make-station-metadata
+           :lat (lat st)
+           :lon (lon st)
+           :depth (depth st)
+           :freqs (blob-to-float (freqs st)))))
+    (make-instance
+     'station :id (id st) :metadata metadata)))
 
 (defun insert-station (station)
   "Inserts a station object into a station-table row. TODO: Update the start-time and end-time values"
@@ -118,7 +123,8 @@
 (defun extract-station (station-id)
   "Extracts station metadata table from the cache"
   (let ((row (car (mito:retrieve-dao 'station-table :id station-id))))
-    (from-table row)))
+    (when row
+      (from-table row))))
 
 ;;; ======================================== Spectral Point table ============================================
 
@@ -198,7 +204,7 @@
     (mito:ensure-table-exists 'station-table)
     (insert-station station)))
 
-(defmacro with-cache-writer ((cache-writer station-id &optional to-rtd) &body body)
+(defmacro with-cache-writer ((cache-writer station-id to-rtd) &body body)
   "Creates a function for writing spectral points to the cache for the station with the given id and executes the body. Uses
    the rtd cache if to-rtd is non-nil."
   (ensure-station-cache-exists)
@@ -222,6 +228,7 @@
 (defun read-cache (station-id start-time end-time &optional from-rtd)
   "Constructs a station and populates it with the data for the given time range"
   (let ((station (read-cache-station station-id from-rtd)))
-    (setf (data station) (read-cache-data station-id start-time end-time from-rtd))
+    (when station
+      (setf (data station) (read-cache-data station-id start-time end-time from-rtd)))
     station))
 

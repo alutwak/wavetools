@@ -71,12 +71,14 @@
     :reader source
     :documentation "The type of the station ('noaa or 'cdip")))
 
-
 (defgeneric freqs (station)
   (:documentation "Returns the frequency array for the station"))
 
-(defgeneric (setf freqs) (station freqs)
+(defgeneric (setf freqs) (freqs station)
   (:documentation "Sets the frequency array for the station"))
+
+(defgeneric (setf data) (data station)
+  (:documentation "Sets the data array for the station"))
 
 (defgeneric freqs-defined (station)
   (:documentation "Returns freqs if they have been defined for the station and nil otherwise"))
@@ -108,15 +110,30 @@
 (defgeneric clear-data (station)
   (:documentation "Clears the station's data"))
 
-(defmethod initialize-instance :after ((st station) &key (lat 999.9) (lon 999.9) (depth 0.0) (freqs #()))
-  (setf (slot-value st 'source) (if (member (id st) *cdip-stations* :test 'string=) 'cdip 'noaa))
-  (setf (metadata st) (make-station-metadata :lat lat :lon lon :depth depth :freqs freqs)))
+(defgeneric is-cdip-station (var)
+  (:documentation "Returns t if the station described by var is a CDIP station"))
+
+(defmethod is-cdip-station ((id string))
+  (member id *cdip-stations* :test 'string=))
+
+(defmethod initialize-instance :after ((st station) &key (data (init-data-vect)))
+  (setf (slot-value st 'source) (if (is-cdip-station st) 'cdip 'noaa))
+  (setf (data st) data))
+
+(defmethod is-cdip-station ((station station))
+  (is-cdip-station (id station)))
 
 (defmethod freqs ((station station))
   (station-metadata-freqs (metadata station)))
 
 (defmethod (setf freqs) ((freqs simple-vector) (station station))
   (setf (station-metadata-freqs (metadata station)) freqs))
+
+(defmethod (setf data) ((data vector) (station station))
+  (let ((len (length data)))
+    (when (> len 0)
+      (setf (slot-value station 'end) (spectral-point-ts (elt data (1- len)))))
+    (setf (slot-value station 'data) data)))
 
 (defmethod freqs-defined ((station station))
   (let ((freqs (freqs station)))
