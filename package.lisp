@@ -45,9 +45,11 @@
            ;; station-cache
            :write-station
            :with-cache-writer
+           :read-cache-station
+           :read-cache-data
            :read-cache
 
            ;; station-download
            :download-station-data
            :download-station-metadata
-           :download-station-rtd))
+           :download-station))

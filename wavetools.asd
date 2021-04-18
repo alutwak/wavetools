@@ -22,4 +22,5 @@ Blah blah blah...."
                (:file "station")
                (:file "station-cache")
                (:file "station-download")
+               (:file "station-getter")
                (:static-file "cdipbuoy.py")))
