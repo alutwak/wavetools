@@ -107,8 +107,8 @@
 
 (defmethod from-table ((st station-table))
   (make-instance
-     'station :id (id st) :lat (lat st) :lon (lon st) :depth (depth st)
-     :freqs (blob-to-float (freqs st))))
+   'station :id (id st) :lat (lat st) :lon (lon st) :depth (depth st)
+   :freqs (blob-to-float (freqs st))))
 
 (defun insert-station (station)
   "Inserts a station object into a station-table row. TODO: Update the start-time and end-time values"
@@ -116,6 +116,7 @@
     (safe-insert row)))
 
 (defun extract-station (station-id)
+  "Extracts station metadata table from the cache"
   (let ((row (car (mito:retrieve-dao 'station-table :id station-id))))
     (from-table row)))
 
@@ -181,6 +182,7 @@
          (data station))))
 
 (defun extract-data (station-id start-time end-time)
+  "Extracts data from the cache"
   (let ((data
           (mito:select-dao 'wavetools::spectral-point-table
             (sxql:where `(:and (:>= :ts ,start-time) (:<= :ts ,end-time) (:= :station-id ,station-id)))
@@ -207,12 +209,19 @@
               (insert-spectral-point sp ,station-id)))
        ,@body)))
 
-(defun read-cache (station-id start-time end-time &optional from-rtd)
-  "Reads all cached data between start-time and end-time into the given station. If from-rtd is non-nil, the data is read
+(defun read-cache-station (station-id &optional from-rtd)
+  (with-db-connection (from-rtd)
+    (extract-station station-id)))
+
+(defun read-cache-data (station-id start-time end-time &optional from-rtd)
+  "Reads all cached data between start-time and end-time for the given station. If from-rtd is non-nil, the data is read
   from the real-time data cache"
   (with-db-connection (from-rtd)
-    (let ((station (extract-station station-id))
-          (data (extract-data station-id start-time end-time)))
-      (setf (data station) data)
-      station)))
+    (extract-data station-id start-time end-time)))
+
+(defun read-cache (station-id start-time end-time &optional from-rtd)
+  "Constructs a station and populates it with the data for the given time range"
+  (let ((station (read-cache-station station-id from-rtd)))
+    (setf (data station) (read-cache-data station-id start-time end-time from-rtd))
+    station))
 
