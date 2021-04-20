@@ -52,4 +52,8 @@
            ;; station-download
            :download-station-data
            :download-station-metadata
-           :download-station))
+           :download-station
+
+           ;; station-getter
+           :get-station-data
+           :get-station-at-time))

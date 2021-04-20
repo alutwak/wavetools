@@ -193,7 +193,7 @@
           (mito:select-dao 'wavetools::spectral-point-table
             (sxql:where `(:and (:>= :ts ,start-time) (:<= :ts ,end-time) (:= :station-id ,station-id)))
             (sxql:order-by :ts))))
-    (map 'vector #'from-table data)))
+    (when data (map 'vector #'from-table data))))
 
 ;;; ================================= Cache API =============================================================
 
@@ -226,9 +226,28 @@
     (extract-data station-id start-time end-time)))
 
 (defun read-cache (station-id start-time end-time &optional from-rtd)
-  "Constructs a station and populates it with the data for the given time range"
-  (let ((station (read-cache-station station-id from-rtd)))
-    (when station
-      (setf (data station) (read-cache-data station-id start-time end-time from-rtd)))
-    station))
+  "Constructs a station and populates it with the data for the given time range
+
+  Parameters
+  ----------
+  station-id : string
+      the station ID
+  start-time : integer
+      The start time as a universal time
+  end-time : integer
+      The end time as a universal time
+  from-rtd : bool
+      When non-nil, reads from the RTD cache. Otherwise reads from the hist cache
+
+  Returns
+  -------
+  If both station metadata and data are found for the given time range, then the station object is returned.
+  Otherwise, nil is returned.  
+"
+  (let* ((station (read-cache-station station-id from-rtd))
+         (data (when station (read-cache-data station-id start-time end-time from-rtd))))
+    (when data
+      (progn
+        (setf (data station) data)
+        station))))
 
