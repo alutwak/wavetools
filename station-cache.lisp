@@ -74,8 +74,8 @@
         (cond ((and
                 (eq error-code :constraint)
                 (string= "UNIQUE" (subseq error-msg 0 6)))
-               nil) ;; (format t "~A~%" message)
-              (t (format t "Unhandled database error: ~A -- ~A~%" code (type-of code))
+               nil)
+              (t (message "Unhandled database error: ~A -- ~A~%" code (type-of code))
                  (error condition)))))))
 
 ;;; ======================================= Station table ===================================================

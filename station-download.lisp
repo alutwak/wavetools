@@ -221,7 +221,7 @@ before closing the files."
                        (t ;; Keep going
                         (parse-next-entry data freqs end-status)))))))
 
-    (format t "Parsing data~%")
+    (message "Parsing data~%")
     (let ((freqs (map
                   'vector
                   #'read-from-string
@@ -313,7 +313,7 @@ before closing the files."
       ;; If the data don't exist for this time, return nil
       (dex:http-request-not-found ()
         (progn
-          (format t "Historical data not found for this date~%")
+          (message "Historical data not found for this date~%")
           ;; Return nil (nothing left to search) if:
           ;;    end-time is nil & (= (get-month end-time) (get-month now))
           ;;    (is-month-date start-time) & (= (get-month start-date) (get-month end-date))
@@ -324,7 +324,7 @@ before closing the files."
                        (= (get-month start-time) (get-month end-time)))
                   (and (not (is-month-date start-time))
                        (= (get-year start-time) (get-year end-time))))
-              (progn (format t "No dates left to search~%") nil)
+              (progn (message "No dates left to search~%") nil)
               'eof))))))
 
 (defun download-station-hist (station-id start-time end-time &optional cache-writer)
@@ -360,24 +360,24 @@ before closing the files."
            (download-all (data next-start)
              (multiple-value-bind (s m h d mon yr) (decode-universal-time next-start 0)
                (declare (ignore s))
-               (format t "Downloading data for time: ~D-~D-~D ~D:~D~%"
+               (message "Downloading data for time: ~D-~D-~D ~D:~D~%"
                        mon d yr h m))
              (multiple-value-bind
                    (end-reached data freqs)
                  (download-station-hist-next-chunk station-id data next-start end-time cache-writer)
                (cond ((equal end-reached 'eot)
                       ;; We've reached end-time
-                      (format t "All requested data found ~%")
+                      (message "All requested data found ~%")
                       (values end-reached data freqs))
                      ((and (not end-reached))
                       ;; Not all data were found and there's no newer data to search
-                      (format t "All requested data not found ~%")
+                      (message "All requested data not found ~%")
                       ;; return 'eof if there is some data, and nil if there is no data
                       (and (> (length data) 0) (values 'eof data freqs)))
                      (t
                       ;; Either data were found, or they weren't but there may be later data. Either way, keep searching
                       (download-all data (calculate-next-start next-start)))))))
-    (format t "Searching for historical data for station ~D~%" station-id)
+    (message "Searching for historical data for station ~D~%" station-id)
     (multiple-value-bind (end-reached data freqs)
         (download-all (init-data-vect) start-time)
       (when end-reached
@@ -496,7 +496,7 @@ before closing the files."
 "
   (flet ((get-data (path)
            (dex:get (format nil "https://www.ndbc.noaa.gov/data/realtime2/~A.~A" station-id path))))
-    (format t "Downlading real-time-data for station ~A~%" station-id)
+    (message "Downlading real-time-data for station ~A~%" station-id)
     (handler-case
         (let* ((raw-data (mapcar #'get-data '("data_spec" "swdir" "swdir2" "swr1" "swr2"))))
 
@@ -520,7 +520,7 @@ before closing the files."
                  "-e" ,(write-to-string end-time)
                  "-o" ,(write-to-string *python-time-offset*)
                  "-m"))
-         (proc-var (progn (format t "~A~%" args)
+         (proc-var (progn (message "~A~%" args)
                           (sb-ext:run-program "python3" args :search t :output :stream :wait nil)))
          (output (sb-ext:process-output proc-var)))
     (labels ((read-data (data)
@@ -536,7 +536,7 @@ before closing the files."
                         (vector-push-extend sp data)
                         (when cache-writer (funcall cache-writer sp))
                         (read-data data))))))
-      (format t "Downloading CDIP data for station ~A~%" station-id)
+      (message "Downloading CDIP data for station ~A~%" station-id)
       ;; Metadata will lead the data
       (let ((metadata (lisp-binary:read-binary 'station-metadata output))
             (data (read-data (init-data-vect))))
@@ -589,7 +589,7 @@ before closing the files."
 
       ;; If write-cache store the station metadata
       (when (and write-cache station)
-        (format t "Writing station info to cache")
+        (message "Writing station info to cache")
         (write-station station rtd-data))
       station)))
 

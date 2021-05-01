@@ -18,6 +18,7 @@ Blah blah blah...."
                #:lquery)
   :serial t
   :components ((:file "package")
+               (:file "message")
                (:file "wavespectrum")
                (:file "station")
                (:file "station-cache")
