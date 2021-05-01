@@ -170,3 +170,20 @@
 (defmethod clear-data ((station station))
   (reset-data-vect (data station)))
 
+(defun dump-station (station dir-res &optional stream)
+  (let ((binary-out (or
+                     stream
+                     (sb-ext::make-fd-stream
+                      1
+                      :name "binary-output"
+                      :output t
+                      :buffering :none
+                      :element-type '(unsigned-byte 8)))))
+    (lisp-binary:write-binary-type (id station) '(lisp-binary:counted-string 1) binary-out)
+    (lisp-binary:write-binary-type (lat station) 'float binary-out)
+    (lisp-binary:write-binary-type (lon station) 'float binary-out)
+    (lisp-binary:write-binary-type (freqs station) '(lisp-binary:counted-array 2 float) binary-out)
+    (lisp-binary:write-binary-type (create-direction-space dir-res) '(lisp-binary:counted-array 2 float) binary-out)
+    (map nil (lambda (spoint)
+               (dump-spectrum spoint (freqs station) dir-res binary-out))
+         (data station))))
