@@ -1,22 +1,37 @@
-; (defpackage :wavetools/station-download
-;;   (:use :cl :sb-ext :wavetools/wavespectrum :wavetools/station :wavetools/station-cache)
-;;   (:import-from :lisp-binary
-;;                 :write-binary
-;;                 :with-open-binary-file)
-;;   (:import-from :cl-ppcre
-;;                 :do-register-groups
-;;                 :create-scanner
-;;                 :register-groups-bind)
-;;   (:import-from :dexador
-;;                 :http-request-not-found)
-;;   (:import-from :lquery
-;;                 :$
-;;                 :initialize)
-;;   (:export :download-station-data
-;;            :download-station-metadata
-;;            :download-station-rtd))
+(defpackage :wavetools/station-download
+  (:use :cl :sb-ext
+        :wavetools/message
+        :wavetools/wavespectrum
+        :wavetools/station
+        :wavetools/station-cache)
+  (:import-from :lisp-binary
+                :write-binary
+                :with-open-binary-file)
+  (:import-from :cl-ppcre
+                :do-register-groups
+                :create-scanner
+                :register-groups-bind)
+  (:import-from :dexador
+                :http-request-not-found)
+  (:import-from :lquery
+                :$
+                :initialize)
+  (:import-from :str
+   :lines)
+  (:import-from :asdf
+                :component-pathname
+                :find-component)
+  (:export
+   :download-station
+   :download-station-metadata))
 
-(in-package :wavetools)
+(in-package :wavetools/station-download)
+
+
+(defvar *cdipbuoy-py-path*
+  (namestring
+   (asdf:component-pathname
+    (asdf:find-component "wavetools" "py/cdipbuoy.py"))))
 
 ;;; ------------------------ Utility Functions --------------------------------------------
 
@@ -148,7 +163,7 @@ before closing the files."
   "Downloads the metadata for a cdip station. This function is very inefficient because it downloads the data for the entire
    history of the station just to get the metadata. download-station-cdip will automatically download the metadata, so you
    don't need to call this function unless you just want to get the metadata and no other data."
-  (let* ((args `("cdipbuoy.py" ,station-id "-s" "1" "-e" "0" "-m"))
+  (let* ((args `(,*cdipbuoy-py-path* ,station-id "-s" "1" "-e" "0" "-m"))
          (proc-var (sb-ext:run-program "python" args :search t :output :stream :wait nil))
          (output (sb-ext:process-output proc-var)))
     (lisp-binary:read-binary 'station-metadata output)))
@@ -190,7 +205,7 @@ before closing the files."
              (let ((data))
                (ppcre:do-register-groups ((#'read-from-string stat))
                    (*hist-stat-freq-scan* line nil :start 16)
-                 (push stat data))
+                 (push (* stat mult) data))
                (apply #'vector (nreverse data))))
            
            (parse-all-lines (c-line a1-line a2-line r1-line r2-line time sp-size)
@@ -379,7 +394,7 @@ before closing the files."
                       (download-all data (calculate-next-start next-start)))))))
     (message "Searching for historical data for station ~D~%" station-id)
     (multiple-value-bind (end-reached data freqs)
-        (download-all (init-data-vect) start-time)
+        (download-all (station::init-data-vect) start-time)
       (when end-reached
         (let ((metadata (download-noaa-station-metadata station-id)))
           (setf (station-metadata-freqs metadata) freqs)
@@ -398,7 +413,7 @@ before closing the files."
 
   Returns 'eot if end-time was reached and 'eof otherwise"
   (let ((freqs #())
-        (data (init-data-vect))
+        (data (station::init-data-vect))
         (fsep-scan (ppcre:create-scanner "([0-9.]+)"))                ; regex for getting the fsep
         (stat-scan (ppcre:create-scanner "([0-9.]+) \\([0-9.]+\\)"))  ; regex for getting the stats
         (freq-scan (ppcre:create-scanner "\\(([0-9.]+)\\)"))) ; regex for getting the freqs
@@ -492,7 +507,6 @@ before closing the files."
   Returns
   -------
   (data-array . station-metadata), or nil if no data were found
-
 "
   (flet ((get-data (path)
            (dex:get (format nil "https://www.ndbc.noaa.gov/data/realtime2/~A.~A" station-id path))))
@@ -511,36 +525,36 @@ before closing the files."
 
 ;;; ========================================== CDIP Stations ========================================================
 
-(defvar *python-time-offset* (encode-universal-time 0 0 0 1 1 1970 0))
-
 (defun download-station-cdip (station-id start-time end-time &optional cache-writer)
-  (let* ((args `("cdipbuoy.py"
+  (let* ((args `(,*cdipbuoy-py-path*
                  ,station-id
-                 "-s" ,(write-to-string start-time)
-                 "-e" ,(write-to-string end-time)
-                 "-o" ,(write-to-string *python-time-offset*)
+                 "-s" ,(write-to-string (- start-time *python-time-offset*))
+                 "-e" ,(write-to-string (- end-time *python-time-offset*))
                  "-m"))
          (proc-var (progn (message "~A~%" args)
                           (sb-ext:run-program "python3" args :search t :output :stream :wait nil)))
          (output (sb-ext:process-output proc-var)))
     (labels ((read-data (data)
                (let* ((sp (lisp-binary:read-binary 'spectral-point output))
-                      (time (spectral-point-ts sp)))
+                      (time (+ (spectral-point-ts sp) *python-time-offset*)))
                  ;; Read until we reach end-time or the end of the file (at which point, ts will be 0)
-                 (cond ((or (= time 0.0)  ; End of cdip data
-                            (and (> time end-time) (not cache-writer)))  ; End of time if we're not caching
+                 (cond ((or (= time *python-time-offset*) ; End of cdip data
+                            (and (> time end-time)))      ; End of time
                         data)
                        ;; The cdipbuoy.py script won't write data before start-time, so we don't need to handle it
                        (t
-                        ;; This is data we want to return. Append it, cache it and keep going
+                        ;; This is data we want to return. Update Append it, cache it and keep going
+                        (setf (spectral-point-ts sp) time)
                         (vector-push-extend sp data)
                         (when cache-writer (funcall cache-writer sp))
                         (read-data data))))))
       (message "Downloading CDIP data for station ~A~%" station-id)
       ;; Metadata will lead the data
       (let ((metadata (lisp-binary:read-binary 'station-metadata output))
-            (data (read-data (init-data-vect))))
-        (cons data metadata)))))
+            (data (read-data (station::init-data-vect))))
+        (if (and (> (length data) 0) metadata)
+            (cons data metadata)
+            (message "No CDIP data available for the given time range~%"))))))
 
 ;;; ========================================== Station Download API ======================================================
 
@@ -575,13 +589,13 @@ before closing the files."
                  (funcall download-fn station-id start-time end-time #'cache-writer))
                (funcall download-fn station-id start-time end-time))))
          
-    (let* ((rtd-data)
+    (let* ((is-rtd-data)
            (data-metadata
              (if (is-cdip-station station-id)
                  (do-download #'download-station-cdip nil)
                  (or (do-download #'download-station-hist nil)
                      (progn
-                       (setq rtd-data t)
+                       (setq is-rtd-data t)
                        (do-download #'download-station-rtd t)))))
            (station (when data-metadata
                       (make-instance
@@ -589,8 +603,8 @@ before closing the files."
 
       ;; If write-cache store the station metadata
       (when (and write-cache station)
-        (message "Writing station info to cache")
-        (write-station station rtd-data))
+        (message "Writing station info to cache~%")
+        (write-station station is-rtd-data))
       station)))
 
 (defun download-station-metadata (station)

@@ -1,5 +1,14 @@
+(defpackage :wavetools/station-getter
+  (:use :cl :wavetools/wavespectrum
+            :wavetools/station
+            :wavetools/station-cache
+            :wavetools/station-download)
+  (:nicknames :station-getter)
+  (:export
+   :get-station-data
+   :get-station-at-time))
 
-(in-package :wavetools)
+(in-package :wavetools/station-getter)
 
 (defun get-station-data (station-id start-time end-time &optional write-cache)
   "Returns the station data for the given time range, if it exists, by:

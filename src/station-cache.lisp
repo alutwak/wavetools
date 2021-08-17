@@ -1,12 +1,18 @@
-;; (defpackage :wavetools/station-cache
-;;   (:use :cl :wavetools/station :wavetools/wavespectrum)
-;;   (:import-from :mito
-;;                 :deftable)
-;;   (:export :write-station
-;;            :with-cache-writer
-;;            :read-cache))
+(defpackage :wavetools/station-cache
+  (:use :cl :wavetools/message
+            :wavetools/wavespectrum
+            :wavetools/station)
+  (:import-from :mito
+                :deftable)
+  (:import-from :sqlite
+                :sqlite-constraint-error
+                :error-msg
+                :error-code)
+  (:export :write-station
+           :with-cache-writer
+           :read-cache))
 
-(in-package :wavetools)
+(in-package :wavetools/station-cache)
 
 ;;;================= ====================== Cache Paths ==============================================
 
@@ -75,7 +81,7 @@
                 (eq error-code :constraint)
                 (string= "UNIQUE" (subseq error-msg 0 6)))
                nil)
-              (t (message "Unhandled database error: ~A -- ~A~%" code (type-of code))
+              (t (message "Unhandled database error: ~A -- ~A~%" error-code (type-of error-code))
                  (error condition)))))))
 
 ;;; ======================================= Station table ===================================================
@@ -190,7 +196,7 @@
 (defun extract-data (station-id start-time end-time)
   "Extracts data from the cache"
   (let ((data
-          (mito:select-dao 'wavetools::spectral-point-table
+          (mito:select-dao 'spectral-point-table
             (sxql:where `(:and (:>= :ts ,start-time) (:<= :ts ,end-time) (:= :station-id ,station-id)))
             (sxql:order-by :ts))))
     (when data (map 'vector #'from-table data))))
