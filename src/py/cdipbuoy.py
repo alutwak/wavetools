@@ -1,4 +1,4 @@
-
+import time
 import sys
 import numpy as np
 from netCDF4 import Dataset
@@ -9,9 +9,35 @@ STATION_MAP = {"46267": 248}
 
 class CDIPBuoy(object):
 
-    def __init__(self, url):
+    def __init__(self, url, start_time=0, end_time=None):
+
+        if end_time is None:
+            end_time = time.time()
+
         self._data = Dataset(url, "r")
-        self._c11 = None
+
+        self.freqs = np.array(self._data.variables['waveFrequency'])
+
+        # Capture the timestamps and filter by start and end
+        self.timestamps = np.array(self._data.variables['waveTime'])
+        ts_range = np.where((self.timestamps >= start_time) & (self.timestamps <= end_time))[0]
+        self.timestamps = self.timestamps[ts_range]
+
+        # We'll write a single time stamp past end_time so that the caller can tell that we actually reached the end_time
+        # and didn't just hit the end of the file
+        time_slice = slice(ts_range[0], ts_range[-1] + 1)
+
+        # Need to remove the -999.99 fill values and just set the energy to zero
+        # This will then need to be dealt with in the r1 and r2 calculations
+        self.c11 = np.array(self._data.variables['waveEnergyDensity'][time_slice])
+        self.c11[np.where(self.c11 < 0.0)] = 0.0
+
+        self.a1 = np.array(self._data.variables['waveA1Value'][time_slice])
+        self.a2 = np.array(self._data.variables['waveA2Value'][time_slice])
+        self.b1 = np.array(self._data.variables['waveB1Value'][time_slice])
+        self.b2 = np.array(self._data.variables['waveB2Value'][time_slice])
+        self.theta1 = np.array(self._data.variables['waveMeanDirection'][time_slice]) * (np.pi / 180)
+
         self._a0 = None
         self._r1 = None
         self._r2 = None
@@ -20,44 +46,8 @@ class CDIPBuoy(object):
         self._theta2 = None
         self._alpha2 = None
 
-    @property
-    def freqs(self):
-        return np.array(self._data.variables['waveFrequency'])
-
-    @property
-    def timestamps(self):
-        return np.array(self._data.variables['waveTime'])
-
-    @property
-    def c11(self):
-        if self._c11 is None:
-            # Need to remove the -999.99 fill values and just set the energy to zero
-            # This will then need to be dealt with in the r1 and r2 calculations
-            self._c11 = np.array(self._data.variables['waveEnergyDensity'])
-            self._c11[np.where(self._c11 < 0.0)] = 0.0
-        return self._c11
-
-    @property
-    def a1(self):
-        return np.array(self._data.variables['waveA1Value'])
-
-    @property
-    def a2(self):
-        return np.array(self._data.variables['waveA2Value'])
-
-    @property
-    def b1(self):
-        return np.array(self._data.variables['waveB1Value'])
-
-    @property
-    def b2(self):
-        return np.array(self._data.variables['waveB2Value'])
-
-    @property
-    def theta1(self):
-        if self._theta1 is None:
-            self._theta1 = np.array(self._data.variables['waveMeanDirection'])*(np.pi/180)
-        return self._theta1
+    def __bool__(self):
+        return len(self.timestamps) > 0
 
     @property
     def alpha1(self):
@@ -174,17 +164,9 @@ def writeSpectralPoint(ts, c, alpha1, alpha2, r1, r2, stream=sys.stdout):
     writeBinaryFloat32(9.999, stream)
 
 
-def writeBuoySpectralData(buoy, start_time=0, end_time=sys.maxsize, offset=0, stream=sys.stdout):
-    start_time -= offset
-    end_time -= offset
+def writeBuoySpectralData(buoy, start_time=0, end_time=sys.maxsize, stream=sys.stdout):
     for ts, c11, alpha1, alpha2, r1, r2 in buoy.spectral_data:
-        if ts > end_time:
-            # We'll write a single time stamp past end_time so that the caller can tell that we actually reached the end_time
-            # and didn't just hit the end of the file
-            writeSpectralPoint(ts+offset, c11, alpha1, alpha2, r1, r2, stream)
-            return
-        elif ts >= start_time:
-            writeSpectralPoint(ts+offset, c11, alpha1, alpha2, r1, r2, stream)
+        writeSpectralPoint(ts, c11, alpha1, alpha2, r1, r2, stream)
 
 
 def writeBuoyMetadata(buoy, stream=sys.stdout):
@@ -199,7 +181,6 @@ if __name__ == "__main__":
     parser.add_argument('station', type=str, help="The station ID")
     parser.add_argument('-s', '--start_time', type=int, default=0, help="The time at which to start reading data")
     parser.add_argument('-e', '--end_time', type=int, default=sys.maxsize, help="Time at which to stop reading data")
-    parser.add_argument('-o', '--time_offset', type=int, default=0, help="Offset time")
     parser.add_argument('-m', '--write_meta', action='store_true', default=False,
                         help="Causes the metadata to be written")
     args = parser.parse_args()
@@ -207,8 +188,20 @@ if __name__ == "__main__":
     if args.station not in STATION_MAP:
         exit(1)
 
-    url = f'http://thredds.cdip.ucsd.edu/thredds/dodsC/cdip/realtime/{STATION_MAP[args.station]}p1_rt.nc'
-    buoy = CDIPBuoy(url)
-    if args.write_meta:
-        writeBuoyMetadata(buoy)
-    writeBuoySpectralData(buoy, args.start_time, args.end_time, args.time_offset)
+    cdip_station = STATION_MAP[args.station]
+    realtime_url = f'http://thredds.cdip.ucsd.edu/thredds/dodsC/cdip/realtime/{cdip_station}p1_rt.nc'
+    historic_url = f'http://thredds.cdip.ucsd.edu/thredds/dodsC/cdip/archive/{cdip_station}p1/{cdip_station}p1_historic.nc'
+
+    for url in (historic_url, realtime_url):
+        try:
+            buoy = CDIPBuoy(url, args.start_time, args.end_time)
+        except OSError:
+            continue
+
+        if args.write_meta:
+            writeBuoyMetadata(buoy)
+        writeBuoySpectralData(buoy, args.start_time, args.end_time)
+        sys.exit(0)
+
+        print((f"Failed to retrieve data for station {args.station} ({cdip_station}) in time range: "
+               f"[{time.asctime(args.start_time)} -- {time.asctime(args.end_time)}]"), file=sys.stderr)
